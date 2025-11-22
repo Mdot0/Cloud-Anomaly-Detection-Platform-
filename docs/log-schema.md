@@ -1,36 +1,9 @@
-\# Log Schema (v1) – Process Creation Logs
+# Log Schema (CERT v6 - Logon Dataset)
 
-
-
-We only support \*\*process creation logs\*\* in CSV form.
-
-
-
-Required columns:
-
-
-
-\- `timestamp` (ISO 8601 string, e.g., `2025-11-20T14:32:01Z`)
-
-\- `host` (string, machine name)
-
-\- `user` (string, account name)
-
-\- `parent\_process` (string, full path or exe name)
-
-\- `process\_name` (string, full path or exe name)
-
-\- `command\_line` (string, full original command line)
-
-
-
-Notes:
-
-\- File must be CSV with a header row.
-
-\- Any missing required column → upload rejected.
-
-\- This is what `/upload-logs` expects.
-
-
-
+| Field     | Type   | Description                                       |
+|-----------|--------|---------------------------------------------------|
+| id        | string | Unique logon event identifier                     |
+| date      | string | Timestamp of the event (MM/DD/YYYY HH:MM:SS)      |
+| user      | string | Username in DOMAIN/USER format                    |
+| pc        | string | Machine/workstation identifier                    |
+| activity  | string | Type of event: Logon or Logoff                    |
