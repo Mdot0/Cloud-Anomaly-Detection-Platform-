@@ -1,56 +1,31 @@
-\# API Outline (Draft)
+POST /upload-logs
 
+Same — upload CSV.
 
+POST /run-anomaly-detection
 
-\## POST /upload-logs
+Updated response schema:
 
-\- Upload CSV log file
+{
+  "entries_analyzed": 84984,
+  "anomalies_found": 221,
+  "anomalies": [
+    {
+      "id": "{NZF8-B4QJ42SF-8977DOEA}",
+      "user": "DTAA/CLN0999",
+      "pc": "PC-4337",
+      "activity": "Logon",
+      "timestamp": "2010-02-02T23:58:56",
+      "anomaly_score": 0.97,
+      "reason": "Rare user-PC combination"
+    }
+  ]
+}
 
-\- Validate schema
+GET /anomalies
 
-\- Save to Blob Storage
+Return list of most recent anomaly records.
 
-\- Return dataset\_id
+GET /schema
 
-
-
-\## POST /run-anomaly-detection
-
-\- Input: dataset\_id
-
-\- Load CSV
-
-\- Call ML run\_inference()
-
-\- Save anomalies in Table Storage
-
-\- Return summary
-
-
-
-\## GET /anomalies?dataset\_id=<id>
-
-\- Return list of anomalies
-
-
-
-\## GET /anomalies/{id}
-
-\- Return details for one anomaly
-
-
-
-\## GET /stats
-
-\- Return summary counts, top hosts, severity distribution
-
-
-
-\## POST /chat
-
-\- Input: anomaly\_id + question
-
-\- Output: LLM-generated explanation
-
-
-
+Return the 5-field log schema.

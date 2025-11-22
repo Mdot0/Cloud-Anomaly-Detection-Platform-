@@ -1,19 +1,17 @@
 # Anomaly Schema (v1) – Azure Table Storage `Anomalies`
 
-Each anomaly row contains:
+Rare user → PC access
 
-- `PartitionKey`: `dataset_id` (string)
-- `RowKey`: `anomaly_id` (UUID string)
+Unusual login time
 
-Other properties:
-- `timestamp`: string
-- `host`: string
-- `user`: string
-- `process_name`: string
-- `parent_process`: string
-- `command_line`: string
+Spike in login activity
 
-ML fields:
-- `score`: float (0–1 anomaly score or model-specific)
-- `severity`: string (`low`, `medium`, `high`)
-- (optional) `model_version`: string
+New workstation for a user
+
+Short burst of logons
+
+Users behaving outside baseline
+
+Activity inconsistent with historical behavior
+
+Role/user mismatch (if later merging with user.csv)
