@@ -4,7 +4,7 @@ csx
 .vs
 edge
 Publish
-
+.funcignore
 *.user
 *.suo
 *.cscfg
