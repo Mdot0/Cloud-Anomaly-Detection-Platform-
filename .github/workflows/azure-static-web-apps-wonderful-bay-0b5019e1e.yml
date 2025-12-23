@@ -10,7 +10,6 @@ on:
       - main
 
 env:
-  # You will create this in GitHub -> Settings -> Secrets and variables -> Actions
   VITE_API_BASE: ${{ secrets.VITE_API_BASE }}
 
 jobs:
@@ -26,20 +25,14 @@ jobs:
         env:
           VITE_API_BASE: ${{ secrets.VITE_API_BASE }}
         with:
-          # ✅ KEEP YOUR EXISTING TOKEN SECRET NAME HERE:
-          # Example:
-          # azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_WONDERFUL_BAY_0B5019E1E1 }}
-          azure_static_web_apps_api_token: ${{ secrets.wonderful-bay-0b5019e1e }}
-
+          azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
           repo_token: ${{ secrets.GITHUB_TOKEN }}
           action: "upload"
 
-          # ✅ This is the important part:
           app_location: "frontend"
           api_location: ""
           output_location: "dist"
 
-          # Force build
           app_build_command: "npm ci && npm run build"
           skip_app_build: false
 
@@ -51,5 +44,5 @@ jobs:
       - name: Close Pull Request
         uses: Azure/static-web-apps-deploy@v1
         with:
-          azure_static_web_apps_api_token: ${{ secrets.wonderful-bay-0b5019e1e }}
+          azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
           action: "close"
