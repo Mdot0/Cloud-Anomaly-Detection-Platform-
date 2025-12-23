@@ -243,3 +243,50 @@ def analyze_upload(req: func.HttpRequest) -> func.HttpResponse:
         mimetype="application/json",
         status_code=200,
     )
+
+
+
+
+@app.function_name(name="get_results")
+@app.route(route="results", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
+def get_results(req: func.HttpRequest) -> func.HttpResponse:
+    try:
+        from azure.storage.blob import BlobServiceClient
+    except ImportError:
+        return func.HttpResponse("azure-storage-blob not installed.", status_code=500)
+
+    conn_str = os.environ.get("AzureWebJobsStorage")
+    if not conn_str:
+        return func.HttpResponse("Missing AzureWebJobsStorage in app settings.", status_code=500)
+
+    upload_id = req.params.get("upload_id")
+    if not upload_id:
+        return func.HttpResponse("Missing query param: upload_id", status_code=400)
+
+    limit = int(req.params.get("limit", "200"))
+
+    results_container = "results"
+    scored_blob = f"scored/{upload_id}.csv"
+    summary_blob = f"summary/{upload_id}.json"
+
+    blob_service = BlobServiceClient.from_connection_string(conn_str)
+    results_client = blob_service.get_container_client(results_container)
+
+    summary_bytes = results_client.get_blob_client(summary_blob).download_blob().readall()
+    scored_bytes = results_client.get_blob_client(scored_blob).download_blob().readall()
+
+    summary = json.loads(summary_bytes.decode("utf-8"))
+    text = scored_bytes.decode("utf-8-sig", errors="replace")
+    reader = csv.DictReader(io.StringIO(text))
+
+    rows = []
+    for i, row in enumerate(reader):
+        if i >= limit:
+            break
+        rows.append(row)
+
+    return func.HttpResponse(
+        json.dumps({"summary": summary, "rows_returned": len(rows), "rows": rows}),
+        mimetype="application/json",
+        status_code=200,
+    )

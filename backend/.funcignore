@@ -1,8 +1,13 @@
-.local.settings.json
-.vscode/
-.vscode/*
+# local/dev
 .venv/
 __pycache__/
 *.pyc
+.DS_Store
+.vscode/
+
+# git + node (in case)
 .git/
-.gitignore
+node_modules/
+
+# misc
+*.log
