@@ -81,7 +81,7 @@ export default function App() {
       const items = (data.items ?? []).slice();
 
       // newest first
-      items.sort((a, b) => {
+      items.sort((a: UploadItem, b: UploadItem) => {
         const ad = Date.parse(a.uploaded_at ?? a.last_modified ?? "") || 0;
         const bd = Date.parse(b.uploaded_at ?? b.last_modified ?? "") || 0;
         return bd - ad;
