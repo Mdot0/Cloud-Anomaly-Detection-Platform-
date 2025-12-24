@@ -1,83 +1,72 @@
 // frontend/src/api.ts
-import type { AnalyzeSummary, UploadItem } from "./types";
+const API_BASE_RAW = (import.meta.env.VITE_API_BASE ?? "").trim();
+const API_BASE = API_BASE_RAW.replace(/\/+$/, ""); // remove trailing slash
 
-const RAW_BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? "";
-const API_BASE = RAW_BASE.replace(/\/+$/, ""); // remove trailing slashes
+function requireApiBase() {
+  if (!API_BASE) {
+    throw new Error(
+      "VITE_API_BASE is missing. It must be set to your Function App base, e.g. https://<funcapp>.azurewebsites.net/api"
+    );
+  }
+}
 
 function url(path: string) {
-  // If VITE_API_BASE is set, always call the Function App directly.
-  // If not set (local dev), fallback to relative paths so Vite proxy can work.
-  if (!API_BASE) return path;
-  if (/^https?:\/\//i.test(path)) return path;
-  return path.startsWith("/") ? `${API_BASE}${path}` : `${API_BASE}/${path}`;
+  requireApiBase();
+  const p = path.startsWith("/") ? path : `/${path}`;
+  return `${API_BASE}${p}`;
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url(path), {
-    ...init,
-    mode: "cors",
-  });
-
+async function readJsonOrText(res: Response) {
   const ct = res.headers.get("content-type") || "";
-  const bodyText = await res.text().catch(() => "");
-
-  if (!res.ok) {
-    const msg = bodyText ? `${res.status} ${res.statusText}: ${bodyText}` : `${res.status} ${res.statusText}`;
-    throw new Error(msg);
-  }
-
+  const text = await res.text();
   if (ct.includes("application/json")) {
-    return JSON.parse(bodyText || "{}") as T;
+    try {
+      return JSON.parse(text);
+    } catch {
+      // fall through
+    }
   }
-
-  // If server returned non-JSON successfully, return the raw text as a fallback.
-  return ({ _raw: bodyText } as unknown) as T;
+  return { _raw: text };
 }
 
-export async function listUploads(limit = 50): Promise<{ count: number; items: UploadItem[] }> {
-  return request(`/api/uploads?limit=${encodeURIComponent(String(limit))}`);
+async function request(path: string, init?: RequestInit) {
+  const res = await fetch(url(path), init);
+  if (!res.ok) {
+    const body = await readJsonOrText(res);
+    const msg =
+      (body && typeof body === "object" && "_raw" in body && String((body as any)._raw).trim()) ||
+      res.statusText ||
+      `HTTP ${res.status}`;
+    throw new Error(`${res.status} ${msg}`);
+  }
+  return readJsonOrText(res);
 }
 
-export async function analyzeUpload(uploadId: string): Promise<AnalyzeSummary> {
-  return request(`/api/analyze?upload_id=${encodeURIComponent(uploadId)}`, {
+export async function listUploads(limit = 25) {
+  return request(`/uploads?limit=${encodeURIComponent(String(limit))}`, {
+    method: "GET",
+  });
+}
+
+export async function analyzeUpload(uploadId: string) {
+  return request(`/analyze?upload_id=${encodeURIComponent(uploadId)}`, {
     method: "POST",
   });
 }
 
-export async function getResults(uploadId: string, limit = 200): Promise<any> {
-  return request(`/api/results?upload_id=${encodeURIComponent(uploadId)}&limit=${encodeURIComponent(String(limit))}`);
+export async function getResults(uploadId: string, limit = 200) {
+  return request(
+    `/results?upload_id=${encodeURIComponent(uploadId)}&limit=${encodeURIComponent(String(limit))}`,
+    { method: "GET" }
+  );
 }
 
-export async function uploadLogs(file: File): Promise<{ upload_id?: string; blob?: string; _raw?: string }> {
-  const fd = new FormData();
-  fd.append("file", file);
+export async function uploadLogs(file: File) {
+  const form = new FormData();
+  form.append("file", file);
 
-  // upload endpoint returns text/plain in your backend, so handle both json + text
-  const res = await fetch(url("/api/upload-logs"), {
+  return request(`/upload-logs`, {
     method: "POST",
-    body: fd,
-    mode: "cors",
+    body: form,
   });
-
-  const ct = res.headers.get("content-type") || "";
-  const text = await res.text().catch(() => "");
-
-  if (!res.ok) {
-    throw new Error(text ? `${res.status} ${res.statusText}: ${text}` : `${res.status} ${res.statusText}`);
-  }
-
-  if (ct.includes("application/json")) {
-    return JSON.parse(text || "{}");
-  }
-
-  // Parse your text output format:
-  // "UploadId: <uuid>" and "Blob: <uuid>.csv"
-  const uploadIdMatch = text.match(/UploadId:\s*([0-9a-fA-F-]+)/);
-  const blobMatch = text.match(/Blob:\s*([^\s]+)/);
-
-  return {
-    upload_id: uploadIdMatch?.[1],
-    blob: blobMatch?.[1],
-    _raw: text,
-  };
 }
