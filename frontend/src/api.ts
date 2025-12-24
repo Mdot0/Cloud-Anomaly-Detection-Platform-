@@ -2,16 +2,14 @@
 const API_BASE_RAW = (import.meta.env.VITE_API_BASE ?? "").trim();
 const API_BASE = API_BASE_RAW.replace(/\/+$/, ""); // remove trailing slash
 
-function requireApiBase() {
-  if (!API_BASE) {
-    throw new Error(
-      "VITE_API_BASE is missing. It must be set to your Function App base, e.g. https://<funcapp>.azurewebsites.net/api"
-    );
-  }
+if (!API_BASE) {
+  // Fail loudly so you never silently call /api on the SWA domain again
+  throw new Error(
+    "VITE_API_BASE is missing. Set it in frontend/.env.production to https://<functionapp>.azurewebsites.net/api"
+  );
 }
 
 function url(path: string) {
-  requireApiBase();
   const p = path.startsWith("/") ? path : `/${path}`;
   return `${API_BASE}${p}`;
 }
@@ -22,9 +20,7 @@ async function readJsonOrText(res: Response) {
   if (ct.includes("application/json")) {
     try {
       return JSON.parse(text);
-    } catch {
-      // fall through
-    }
+    } catch {}
   }
   return { _raw: text };
 }
@@ -43,22 +39,7 @@ async function request(path: string, init?: RequestInit) {
 }
 
 export async function listUploads(limit = 25) {
-  return request(`/uploads?limit=${encodeURIComponent(String(limit))}`, {
-    method: "GET",
-  });
-}
-
-export async function analyzeUpload(uploadId: string) {
-  return request(`/analyze?upload_id=${encodeURIComponent(uploadId)}`, {
-    method: "POST",
-  });
-}
-
-export async function getResults(uploadId: string, limit = 200) {
-  return request(
-    `/results?upload_id=${encodeURIComponent(uploadId)}&limit=${encodeURIComponent(String(limit))}`,
-    { method: "GET" }
-  );
+  return request(`/uploads?limit=${encodeURIComponent(String(limit))}`, { method: "GET" });
 }
 
 export async function uploadLogs(file: File) {
@@ -69,4 +50,15 @@ export async function uploadLogs(file: File) {
     method: "POST",
     body: form,
   });
+}
+
+export async function analyzeUpload(uploadId: string) {
+  return request(`/analyze?upload_id=${encodeURIComponent(uploadId)}`, { method: "POST" });
+}
+
+export async function getResults(uploadId: string, limit = 200) {
+  return request(
+    `/results?upload_id=${encodeURIComponent(uploadId)}&limit=${encodeURIComponent(String(limit))}`,
+    { method: "GET" }
+  );
 }
