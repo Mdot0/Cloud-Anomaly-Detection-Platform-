@@ -6,9 +6,7 @@ backend/local.settings.json
 
 # Env files (keep secrets out of git)
 .env
-.env.*
 frontend/.env
-frontend/.env.*
 backend/.env
 backend/.env.*
 
