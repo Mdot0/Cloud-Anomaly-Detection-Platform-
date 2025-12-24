@@ -1,5 +1,4 @@
 name: Azure Static Web Apps CI/CD
-
 on:
   push:
     branches:
@@ -8,7 +7,6 @@ on:
     types: [opened, synchronize, reopened, closed]
     branches:
       - main
-
 jobs:
   build_and_deploy_job:
     if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'closed')
@@ -19,17 +17,35 @@ jobs:
         with:
           submodules: true
           lfs: false
-
-      - name: Build And Deploy
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+      
+      - name: Install dependencies
+        run: |
+          cd frontend
+          npm ci
+      
+      - name: Build
+        run: |
+          cd frontend
+          npm run build
+        env:
+          VITE_API_BASE: https://cloudguard-backend-new-e7hechafgxafhsax.westus2-01.azurewebsites.net/api
+      
+      - name: Deploy to Azure Static Web Apps
         id: builddeploy
-        uses: Azure/static-web-apps-deploy@v1
+        uses: Azure/static-web-apps-deploy@1a947bfa8b6b44b48c4cbdedb44e576c92e41042
         with:
           azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_CLOUDGUARD }}
           repo_token: ${{ secrets.GITHUB_TOKEN }}
           action: "upload"
           app_location: "./frontend"
           output_location: "dist"
-
+          skip_app_build: true
+  
   close_pull_request_job:
     if: github.event_name == 'pull_request' && github.event.action == 'closed'
     runs-on: ubuntu-latest
@@ -37,7 +53,7 @@ jobs:
     steps:
       - name: Close Pull Request
         id: closepullrequest
-        uses: Azure/static-web-apps-deploy@v1
+        uses: Azure/static-web-apps-deploy@1a947bfa8b6b44b48c4cbdedb44e576c92e41042
         with:
           azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_CLOUDGUARD }}
           action: "close"
