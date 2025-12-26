@@ -1,6 +1,6 @@
 # CloudGuard – Cloud Log Upload & Anomaly Detection Platform
 
-CloudGuard is a cloud-native log ingestion and analysis platform built to demonstrate secure cloud architecture, backend APIs, and scalable data processing patterns using Azure.
+CloudGuard is a cloud-native log ingestion and analysis platform built to demonstrate secure cloud architecture, observability, and scalable backend design using Microsoft Azure.
 
 The system allows users to upload log files (CSV), store them durably in cloud storage, run analysis on those logs, and retrieve scored results through a clean API and web interface.
 
@@ -14,13 +14,17 @@ The system allows users to upload log files (CSV), store them durably in cloud s
 - Calls backend APIs directly via environment-injected base URL
 
 **Backend**
-- Azure Functions (Python)
-- Stateless HTTP APIs
+- Azure Functions (Python, HTTP-triggered)
+- Stateless API design
 - Handles uploads, processing, and results retrieval
 
 **Storage**
 - Azure Blob Storage
 - Used as a data lake for raw logs and processed results
+
+**Observability**
+- Azure Application Insights
+- Azure Monitor (logs, metrics, dashboards, alerts)
 
 ---
 
@@ -39,7 +43,7 @@ The system allows users to upload log files (CSV), store them durably in cloud s
 
 ## API Endpoints
 
-All backend endpoints are exposed via Azure Functions and are currently **anonymous** (auth will be added later).
+All backend endpoints are exposed via Azure Functions and are currently **anonymous** (authentication will be added later).
 
 | Method | Route | Description |
 |------|------|------------|
@@ -53,7 +57,7 @@ All backend endpoints are exposed via Azure Functions and are currently **anonym
 
 ## Storage Layout
 
-Blob Storage is used as immutable, durable storage.
+Azure Blob Storage is used as immutable, durable storage.
 
 logs/
 └── <upload_id>.csv # raw uploaded logs
@@ -63,6 +67,7 @@ results/
 └── summary/<upload_id>.json # analysis metadata
 
 
+
 This separation keeps raw data and derived results isolated and auditable.
 
 ---
@@ -70,7 +75,8 @@ This separation keeps raw data and derived results isolated and auditable.
 ## Frontend Design
 
 The frontend is a static React app with:
-- A drag-and-drop CSV upload interface
+
+- Drag-and-drop CSV upload interface
 - Explicit environment-based API routing
 - A centralized API client (`api.ts`) that:
   - Requires `VITE_API_BASE` at build time
@@ -87,11 +93,62 @@ The backend uses the Azure Functions Python v2 programming model.
 
 Key characteristics:
 - Stateless HTTP endpoints
-- No direct browser access to storage credentials
+- No storage credentials exposed to the client
 - Storage access handled server-side only
 - Designed so analysis logic can be swapped without changing the API
 
-The current analysis step uses a placeholder scoring function and is structured to support ML model inference in future versions.
+The current analysis step uses placeholder scoring logic and is structured to support ML model inference in future versions.
+
+---
+
+## Observability & Monitoring
+
+CloudGuard includes **first-class observability** using Azure-native tooling.
+
+### Structured Logging
+All major pipeline steps emit structured JSON logs, including:
+- upload received
+- upload stored
+- analysis started
+- analysis completed
+- failure cases
+
+Each log includes contextual fields such as:
+- `upload_id` (correlation ID)
+- endpoint name
+- file size
+- processing duration
+- error messages (if any)
+
+This enables precise filtering and end-to-end tracing in Application Insights.
+
+---
+
+### Custom Metrics
+The backend emits custom metrics for operational visibility, including:
+
+- `cloudguard.uploads.count`  
+- `cloudguard.uploads.size_bytes`  
+- `cloudguard.analysis.duration_ms`  
+- `cloudguard.analysis.failures`  
+
+These metrics allow dashboards and alerts for:
+- traffic spikes
+- performance regressions
+- failure rates
+- cost and capacity planning
+
+---
+
+### Built-In Telemetry
+Azure Application Insights automatically captures:
+- request counts
+- latency
+- error rates
+- dependency calls
+- cold starts
+
+Together with custom signals, this provides full observability across the system.
 
 ---
 
@@ -105,7 +162,8 @@ The current analysis step uses a placeholder scoring function and is structured 
 ### Backend Deployment
 - Azure Functions deployed separately
 - Default `/api` route prefix is used
-- CORS is configured to allow requests from the Static Web App domain
+- CORS explicitly allows the Static Web App origin
+- Observability is enabled via Application Insights
 
 ---
 
@@ -116,8 +174,8 @@ Blob Storage is used for:
 - Low-cost, durable storage
 - Simple access patterns
 
-A database (e.g., Cosmos DB) would only be introduced later for:
-- Job state
+A database (e.g., Azure Cosmos DB) would only be introduced later for:
+- Job state tracking
 - Metadata querying
 - Analytics dashboards
 
@@ -125,25 +183,25 @@ This separation avoids misusing a database for file storage.
 
 ---
 
-## Event-Driven Architecture (Future)
+## Event-Driven Architecture (Future Work)
 
-The current design is request-driven and synchronous for simplicity.
+The current pipeline is request-driven and synchronous for simplicity.
 
-The pipeline is intentionally structured so it can evolve into an event-driven system:
+The architecture is intentionally designed to evolve into an event-driven system:
 
 - Upload emits an event
 - Queue-triggered Function processes logs asynchronously
 - Failed jobs route to a dead-letter queue (DLQ)
 
-This enables scalability without changing storage or frontend logic.
+This enables horizontal scaling and long-running analysis without frontend blocking.
 
 ---
 
 ## Security Considerations
 
-- No storage credentials exposed to the client
+- No storage credentials exposed to clients
 - Backend APIs act as the trust boundary
-- CORS is explicitly restricted to allowed origins
+- Explicit CORS configuration
 - Clear separation between static hosting and compute
 
 Authentication and authorization will be added in a later phase.
@@ -152,20 +210,24 @@ Authentication and authorization will be added in a later phase.
 
 ## Project Status
 
-Current:
+**Current**
 - Fully functional upload → analyze → results pipeline
-- Clean separation of frontend, backend, and storage
+- Structured logging and custom metrics implemented
 - CI/CD in place
+- Cloud observability enabled
 
-Planned:
+**Planned**
 - Replace dummy scoring with ML model inference
-- Add async processing via queues
-- Introduce authentication and role-based access
-- Add observability and metrics
+- Add asynchronous processing via queues
+- Introduce authentication and RBAC
+- Add alerting and dashboards
+- Expand log format support
 
 ---
 
-## Authors
+## Author
 
-Matthew Lee & Poorva Vakharia
+Matthew Lee & Poorva Vakharia 
 CloudGuard – Cloud Anomaly Detection Platform
+
+
