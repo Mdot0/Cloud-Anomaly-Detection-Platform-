@@ -4,17 +4,57 @@ import io
 import json
 import logging
 import os
+import time
 import uuid
 from datetime import datetime, timezone
+from typing import Any
 
 import azure.functions as func
+from azure.monitor.opentelemetry import configure_azure_monitor
+from opentelemetry import metrics
 
 app = func.FunctionApp()
 
+# ------------------------------------------------------------
+# Observability (Azure Monitor + Application Insights)
+# ------------------------------------------------------------
+# Exports logs/traces/metrics to Application Insights using
+# APPLICATIONINSIGHTS_CONNECTION_STRING from Function App settings.
+configure_azure_monitor()
+
+meter = metrics.get_meter("cloudguard")
+
+uploads_count = meter.create_counter(
+    name="cloudguard.uploads.count",
+    description="Number of uploaded log files",
+)
+
+uploads_bytes = meter.create_histogram(
+    name="cloudguard.uploads.size_bytes",
+    description="Size of uploaded CSVs in bytes",
+)
+
+analysis_duration_ms = meter.create_histogram(
+    name="cloudguard.analysis.duration_ms",
+    description="Time spent analyzing an upload (ms)",
+)
+
+analysis_failures = meter.create_counter(
+    name="cloudguard.analysis.failures",
+    description="Number of analysis failures",
+)
 
 # ----------------------------
 # Helpers
 # ----------------------------
+def log_event(event: str, **fields: Any) -> None:
+    """
+    Structured log as a single JSON line so it can be parsed in Application Insights.
+    """
+    payload = {"event": event, **fields}
+    logging.info(json.dumps(payload))
+
+
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
@@ -83,7 +123,6 @@ def _text(req: func.HttpRequest, text: str, status_code: int = 200) -> func.Http
     )
 
 
-
 def _preflight(req: func.HttpRequest) -> func.HttpResponse:
     # Return 204 for OPTIONS preflight
     return func.HttpResponse(status_code=204, headers=_cors_headers(req))
@@ -105,8 +144,6 @@ def ping(req: func.HttpRequest) -> func.HttpResponse:
 def upload_logs(req: func.HttpRequest) -> func.HttpResponse:
     if req.method == "OPTIONS":
         return _preflight(req)
-
-    logging.info("upload_logs function triggered.")
 
     try:
         from azure.storage.blob import BlobServiceClient
@@ -146,7 +183,21 @@ def upload_logs(req: func.HttpRequest) -> func.HttpResponse:
         blob_client = container_client.get_blob_client(blob_name)
 
         original_filename = getattr(file, "filename", None) or "uploaded.csv"
+
+        # Read the uploaded file ONCE (stream is consumed after reading)
         data = file.stream.read()
+        size_bytes = len(data)
+
+        # Structured log + custom metrics
+        log_event(
+            "upload_received",
+            endpoint="upload-logs",
+            upload_id=upload_id,
+            original_filename=original_filename,
+            size_bytes=size_bytes,
+        )
+        uploads_count.add(1, {"endpoint": "upload-logs"})
+        uploads_bytes.record(size_bytes, {"endpoint": "upload-logs"})
 
         # Upload file contents
         blob_client.upload_blob(data, overwrite=True)
@@ -158,6 +209,15 @@ def upload_logs(req: func.HttpRequest) -> func.HttpResponse:
         }
         blob_client.set_blob_metadata(metadata)
 
+        log_event(
+            "upload_stored",
+            endpoint="upload-logs",
+            upload_id=upload_id,
+            blob=blob_name,
+            container=container_name,
+            storage_account=account_name,
+        )
+
         return _json(
             req,
             {
@@ -167,12 +227,14 @@ def upload_logs(req: func.HttpRequest) -> func.HttpResponse:
                 "container": container_name,
                 "storage_account": account_name,
                 "original_filename": original_filename,
+                "size_bytes": size_bytes,
             },
             200,
         )
 
     except Exception as e:
         logging.exception("Error in upload_logs")
+        log_event("upload_failed", endpoint="upload-logs", upload_id=locals().get("upload_id"), error=str(e))
         return _json(req, {"error": f"Error during upload: {str(e)}"}, 500)
 
 
@@ -249,6 +311,10 @@ def analyze_upload(req: func.HttpRequest) -> func.HttpResponse:
     upload_id = req.params.get("upload_id")
     if not upload_id:
         return _json(req, {"error": "Missing query param: upload_id"}, 400)
+
+    # Start timing AFTER we have a valid upload_id (OPTIONS preflight should not count)
+    t0 = time.time()
+    log_event("analyze_started", endpoint="analyze", upload_id=upload_id)
 
     logs_container = "logs"
     results_container = "results"
@@ -327,10 +393,36 @@ def analyze_upload(req: func.HttpRequest) -> func.HttpResponse:
             overwrite=True,
         )
 
+        dt_ms = int((time.time() - t0) * 1000)
+        analysis_duration_ms.record(dt_ms, {"endpoint": "analyze"})
+
+        log_event(
+            "analyze_complete",
+            endpoint="analyze",
+            upload_id=upload_id,
+            duration_ms=dt_ms,
+            rows=rows,
+            anomalies=anomalies,
+            model_version=model_version,
+        )
+
         return _json(req, summary, 200)
 
     except Exception as e:
         logging.exception("Error in analyze_upload")
+
+        analysis_failures.add(1, {"endpoint": "analyze"})
+
+        dt_ms = int((time.time() - t0) * 1000)
+        analysis_duration_ms.record(dt_ms, {"endpoint": "analyze"})
+
+        log_event(
+            "analyze_failed",
+            endpoint="analyze",
+            upload_id=upload_id,
+            duration_ms=dt_ms,
+            error=str(e),
+        )
         return _json(req, {"error": str(e)}, 500)
 
 
