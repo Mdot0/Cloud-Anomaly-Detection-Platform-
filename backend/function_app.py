@@ -74,13 +74,14 @@ def _json(req: func.HttpRequest, payload: dict, status_code: int = 200) -> func.
     )
 
 
-def _text(req: func.Http.HttpRequest, text: str, status_code: int = 200) -> func.HttpResponse:  # type: ignore
+def _text(req: func.HttpRequest, text: str, status_code: int = 200) -> func.HttpResponse:
     return func.HttpResponse(
         text,
         status_code=status_code,
         mimetype="text/plain",
         headers=_cors_headers(req),
     )
+
 
 
 def _preflight(req: func.HttpRequest) -> func.HttpResponse:
