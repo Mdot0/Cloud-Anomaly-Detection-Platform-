@@ -13,6 +13,11 @@ import azure.functions as func
 from azure.monitor.opentelemetry import configure_azure_monitor
 from opentelemetry import metrics
 
+# ----------------------------
+# ADDED: Service Bus imports
+# ----------------------------
+from azure.servicebus import ServiceBusClient, ServiceBusMessage
+
 app = func.FunctionApp()
 
 # ------------------------------------------------------------
@@ -129,6 +134,49 @@ def _preflight(req: func.HttpRequest) -> func.HttpResponse:
 
 
 # ----------------------------
+# ADDED: enqueue helper
+# ----------------------------
+def enqueue_analyze_job(upload_id: str, blob: str, container: str = "logs") -> tuple[bool, str | None]:
+    """
+    Enqueue an analysis job to Azure Service Bus.
+
+    Requires Function App Application Settings:
+      - SERVICEBUS_CONNECTION: Service Bus connection string
+      - ANALYZE_QUEUE_NAME: queue name (e.g., analye-job)
+
+    Returns:
+      (ok, error_message)
+    """
+    sb_conn = os.environ.get("SERVICEBUS_CONNECTION", "").strip()
+    queue_name = os.environ.get("ANALYZE_QUEUE_NAME", "").strip()
+
+    if not sb_conn or not queue_name:
+        err = "Missing SERVICEBUS_CONNECTION or ANALYZE_QUEUE_NAME"
+        log_event("job_enqueue_skipped", upload_id=upload_id, reason=err)
+        return False, err
+
+    payload = {
+        "upload_id": upload_id,
+        "container": container,
+        "blob": blob,
+        "requested_at": utc_now_iso(),
+    }
+
+    try:
+        with ServiceBusClient.from_connection_string(sb_conn) as client:
+            with client.get_queue_sender(queue_name) as sender:
+                sender.send_messages(ServiceBusMessage(json.dumps(payload)))
+
+        log_event("job_enqueue_ok", upload_id=upload_id, queue=queue_name, blob=blob, container=container)
+        return True, None
+
+    except Exception as e:
+        logging.exception("Service Bus enqueue failed")
+        log_event("job_enqueue_failed", upload_id=upload_id, queue=queue_name, error=str(e))
+        return False, str(e)
+
+
+# ----------------------------
 # Routes
 # ----------------------------
 @app.function_name(name="ping")
@@ -218,6 +266,11 @@ def upload_logs(req: func.HttpRequest) -> func.HttpResponse:
             storage_account=account_name,
         )
 
+        # ----------------------------
+        # ADDED: enqueue analysis job
+        # ----------------------------
+        enq_ok, enq_err = enqueue_analyze_job(upload_id=upload_id, blob=blob_name, container=container_name)
+
         return _json(
             req,
             {
@@ -228,6 +281,10 @@ def upload_logs(req: func.HttpRequest) -> func.HttpResponse:
                 "storage_account": account_name,
                 "original_filename": original_filename,
                 "size_bytes": size_bytes,
+                # ADDED: enqueue verification fields
+                "enqueued": enq_ok,
+                "enqueue_error": enq_err,
+                "queue_name": os.environ.get("ANALYZE_QUEUE_NAME", ""),
             },
             200,
         )
