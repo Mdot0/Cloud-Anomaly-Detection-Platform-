@@ -1,233 +1,201 @@
-# CloudGuard – Cloud Log Upload & Anomaly Detection Platform
+# CloudGuard — Cloud Log Upload & AI Anomaly Detection Platform
 
-CloudGuard is a cloud-native log ingestion and analysis platform built to demonstrate secure cloud architecture, observability, and scalable backend design using Microsoft Azure.
+CloudGuard is a cloud-native platform for uploading log files, running AI-based anomaly detection, and reviewing suspicious activity through a web interface.
 
-The system allows users to upload log files (CSV), store them durably in cloud storage, run analysis on those logs, and retrieve scored results through a clean API and web interface.
-
----
-
-## High-Level Architecture
-
-**Frontend**
-- React + Vite
-- Deployed to Azure Static Web Apps
-- Calls backend APIs directly via environment-injected base URL
-
-**Backend**
-- Azure Functions (Python, HTTP-triggered)
-- Stateless API design
-- Handles uploads, processing, and results retrieval
-
-**Storage**
-- Azure Blob Storage
-- Used as a data lake for raw logs and processed results
-
-**Observability**
-- Azure Application Insights
-- Azure Monitor (logs, metrics, dashboards, alerts)
+The project demonstrates secure cloud architecture, event-driven backend design, and practical machine-learning inference in production.
 
 ---
 
-## End-to-End Flow
+## What This Project Does (High Level)
 
-1. User uploads a CSV log file from the web UI
-2. Frontend sends the file to the backend API
-3. Backend stores the raw file in Blob Storage (`logs` container)
-4. User triggers analysis for a specific upload
-5. Backend processes the file and writes:
-   - scored CSV output
-   - JSON summary
-6. Frontend fetches and displays results
+1. Users upload log files (CSV) through a web UI
+2. Logs are stored durably in cloud storage
+3. An AI model analyzes the logs for anomalous behavior
+4. Results are written back to storage
+5. The frontend displays anomaly scores and highlights suspicious events
 
----
-
-## API Endpoints
-
-All backend endpoints are exposed via Azure Functions and are currently **anonymous** (authentication will be added later).
-
-| Method | Route | Description |
-|------|------|------------|
-| GET | `/api/ping` | Health check |
-| POST | `/api/upload-logs` | Upload a CSV log file |
-| GET | `/api/uploads?limit=` | List uploaded files |
-| POST | `/api/analyze?upload_id=` | Run analysis on an upload |
-| GET | `/api/results?upload_id=&limit=` | Fetch scored results |
+This is an **end-to-end system**, not just a model or a script.
 
 ---
 
-## Storage Layout
+## Architecture Overview
 
-Azure Blob Storage is used as immutable, durable storage.
+### Frontend
+- **React + Vite**
+- Deployed using **Azure Static Web Apps**
+- Handles file upload, analysis triggers, and results visualization
+- Communicates with backend via REST API (`/api/*`)
 
-logs/
-└── <upload_id>.csv # raw uploaded logs
+### Backend
+- **Azure Functions (Python)**
+- Stateless, serverless API
+- Responsibilities:
+  - Accept uploads
+  - Store files in Blob Storage
+  - Trigger analysis
+  - Return scored results
+- Integrated observability via **Azure Monitor / Application Insights**
 
-results/
-├── scored/<upload_id>.csv # processed output
-└── summary/<upload_id>.json # analysis metadata
+### Storage
+- **Azure Blob Storage**
+- Containers:
+  - `logs/` → raw uploaded CSV files
+  - `results/scored/` → scored CSV outputs
+  - `results/summary/` → JSON summaries
 
-
-
-This separation keeps raw data and derived results isolated and auditable.
-
----
-
-## Frontend Design
-
-The frontend is a static React app with:
-
-- Drag-and-drop CSV upload interface
-- Explicit environment-based API routing
-- A centralized API client (`api.ts`) that:
-  - Requires `VITE_API_BASE` at build time
-  - Prevents accidental calls to the Static Web App `/api` path
-  - Handles errors and response parsing consistently
-
-All Azure-specific logic is isolated from UI components.
-
----
-
-## Backend Design
-
-The backend uses the Azure Functions Python v2 programming model.
-
-Key characteristics:
-- Stateless HTTP endpoints
-- No storage credentials exposed to the client
-- Storage access handled server-side only
-- Designed so analysis logic can be swapped without changing the API
-
-The current analysis step uses placeholder scoring logic and is structured to support ML model inference in future versions.
+### AI / Machine Learning
+- **Unsupervised anomaly detection**
+- Training and research code lives in `ml/`
+- Production inference code lives in `backend/ai/`
+- Current model: **Isolation Forest (iforest-v1)**
 
 ---
 
-## Observability & Monitoring
+## End-to-End Data Flow
 
-CloudGuard includes **first-class observability** using Azure-native tooling.
+### 1. Upload
+Frontend → `POST /api/upload-logs`
 
-### Structured Logging
-All major pipeline steps emit structured JSON logs, including:
-- upload received
-- upload stored
-- analysis started
-- analysis completed
-- failure cases
+- CSV is uploaded via the web UI
+- Backend generates an `upload_id`
+- File is stored as:
+logs/<upload_id>.csv
 
-Each log includes contextual fields such as:
-- `upload_id` (correlation ID)
-- endpoint name
-- file size
-- processing duration
-- error messages (if any)
+markdown
+Copy code
 
-This enables precise filtering and end-to-end tracing in Application Insights.
+### 2. Analyze
+Frontend → `POST /api/analyze?upload_id=...`
 
----
+Backend:
+- Downloads raw CSV from Blob Storage
+- Passes file bytes into the AI scoring function
+- Writes outputs to:
+results/scored/<upload_id>.csv
+results/summary/<upload_id>.json
 
-### Custom Metrics
-The backend emits custom metrics for operational visibility, including:
+markdown
+Copy code
 
-- `cloudguard.uploads.count`  
-- `cloudguard.uploads.size_bytes`  
-- `cloudguard.analysis.duration_ms`  
-- `cloudguard.analysis.failures`  
+### 3. View Results
+Frontend → `GET /api/results?upload_id=...&limit=N`
 
-These metrics allow dashboards and alerts for:
-- traffic spikes
-- performance regressions
-- failure rates
-- cost and capacity planning
+- Backend reads scored CSV + summary
+- Returns JSON for UI rendering
+- Frontend highlights anomalies and allows sorting by score
 
 ---
 
-### Built-In Telemetry
-Azure Application Insights automatically captures:
-- request counts
-- latency
-- error rates
-- dependency calls
-- cold starts
+## How Anomaly Detection Works (logon.csv)
 
-Together with custom signals, this provides full observability across the system.
+This project currently focuses on **logon activity logs**.
+
+### Feature Engineering
+Each log row is converted into numeric features, including:
+- Time features (hour, day of week, weekend)
+- Activity type (logon vs logoff)
+- Frequency-based features:
+- How often a user appears
+- How often a PC appears
+- How often a (user, PC) pair appears
+- Inverse frequency (rarity)
+
+Rare behavior receives higher anomaly scores.
+
+### Model
+- **Isolation Forest**
+- Trained without labels (unsupervised)
+- Learns what “normal” activity looks like
+- Produces a continuous anomaly score per row
+
+### Scoring Output
+Each row in the scored CSV includes:
+- `anomaly_score` (float, higher = more suspicious)
+- `is_anomaly` (0/1 based on percentile threshold)
+- `model_version` (e.g., `iforest-v1`)
+- `scored_at` (UTC timestamp)
+
+---
+
+## Repository Structure
+
+.
+├── frontend/ # React + Vite web UI
+│ └── src/
+│ └── components/
+│ └── ResultsTable.tsx
+│
+├── backend/ # Azure Functions backend
+│ ├── function_app.py # API routes and orchestration
+│ ├── ai/
+│ │ └── scorer.py # Production inference interface
+│ └── models/ # Exported model artifacts
+│
+├── ml/ # Training & research (NOT deployed)
+│ ├── feature_engineering.py
+│ ├── anomaly_model.py
+│ ├── train_model.py
+│ ├── score_logs.py
+│ └── notebooks/
+│
+└── .github/workflows/ # CI/CD (GitHub Actions)
+
+markdown
+Copy code
+
+### Key Design Rule
+**Training code is never mixed with production backend code.**
+
+- `ml/` → experimentation, heavy libraries, notebooks
+- `backend/ai/` → minimal, stable inference logic for Azure
 
 ---
 
 ## Deployment & CI/CD
 
-### Frontend CI/CD
-- GitHub Actions builds the React app on every push to `main`
-- `VITE_API_BASE` is injected at build time
-- The prebuilt `dist/` folder is deployed to Azure Static Web Apps
+### GitHub Actions
+- Runs on pushes/merges to `main`
+- Builds and deploys:
+  - Frontend → Azure Static Web Apps
+  - Backend → Azure Functions
 
-### Backend Deployment
-- Azure Functions deployed separately
-- Default `/api` route prefix is used
-- CORS explicitly allows the Static Web App origin
-- Observability is enabled via Application Insights
+### Frontend
+- Built with `npm run build`
+- Served as static assets
+- Uses environment variable:
+VITE_API_BASE=https://<backend>/api
 
----
+yaml
+Copy code
 
-## Why Blob Storage (Not a Database)
-
-Blob Storage is used for:
-- Large, immutable files (logs, CSVs, artifacts)
-- Low-cost, durable storage
-- Simple access patterns
-
-A database (e.g., Azure Cosmos DB) would only be introduced later for:
-- Job state tracking
-- Metadata querying
-- Analytics dashboards
-
-This separation avoids misusing a database for file storage.
+### Backend
+- Python Azure Functions runtime
+- Automatically redeployed when backend code changes
+- Observability enabled via Application Insights
 
 ---
 
-## Event-Driven Architecture (Future Work)
+## Why This Project Matters
 
-The current pipeline is request-driven and synchronous for simplicity.
+This project demonstrates:
+- Secure cloud-native architecture
+- Event-driven backend design
+- Practical ML inference in production
+- Clean separation of concerns (UI / API / ML)
+- Real-world anomaly detection logic, not toy examples
 
-The architecture is intentionally designed to evolve into an event-driven system:
-
-- Upload emits an event
-- Queue-triggered Function processes logs asynchronously
-- Failed jobs route to a dead-letter queue (DLQ)
-
-This enables horizontal scaling and long-running analysis without frontend blocking.
-
----
-
-## Security Considerations
-
-- No storage credentials exposed to clients
-- Backend APIs act as the trust boundary
-- Explicit CORS configuration
-- Clear separation between static hosting and compute
-
-Authentication and authorization will be added in a later phase.
+It is designed to be:
+- Extendable (more log types, more models)
+- Automatable (Service Bus worker support)
+- Resume-ready and interview-explainable
 
 ---
 
-## Project Status
-
-**Current**
-- Fully functional upload → analyze → results pipeline
-- Structured logging and custom metrics implemented
-- CI/CD in place
-- Cloud observability enabled
-
-**Planned**
-- Replace dummy scoring with ML model inference
-- Add asynchronous processing via queues
-- Introduce authentication and RBAC
-- Add alerting and dashboards
-- Expand log format support
+## Future Improvements
+- Support additional log types (HTTP, device, auth)
+- Store models in Blob Storage instead of repo
+- Background queue-based analysis (Service Bus worker)
+- Model versioning and A/B testing
+- Visualization dashboards for anomaly trends
 
 ---
-
-## Author
-
-Matthew Lee & Poorva Vakharia 
-CloudGuard – Cloud Anomaly Detection Platform
-
-
