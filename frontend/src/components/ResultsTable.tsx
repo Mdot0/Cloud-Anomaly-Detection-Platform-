@@ -16,10 +16,12 @@ function compareValues(a: any, b: any, dir: "asc" | "desc") {
   const an = toNumber(a);
   const bn = toNumber(b);
 
+  // Numeric compare if both parse to numbers
   if (!Number.isNaN(an) && !Number.isNaN(bn)) {
     return dir === "asc" ? an - bn : bn - an;
   }
 
+  // Fallback string compare
   const as = String(a ?? "");
   const bs = String(b ?? "");
   return dir === "asc" ? as.localeCompare(bs) : bs.localeCompare(as);
@@ -31,6 +33,7 @@ export default function ResultsTable({ rows, defaultSortKey = "anomaly_score" }:
 
   const columns = useMemo(() => {
     if (!rows?.length) return [];
+    // Prefer a stable column order: known keys first, then the rest
     const preferred = ["user", "pc", "activity", "anomaly_score", "is_anomaly", "model_version", "scored_at"];
     const keys = Object.keys(rows[0]);
     const rest = keys.filter((k) => !preferred.includes(k));
@@ -38,7 +41,7 @@ export default function ResultsTable({ rows, defaultSortKey = "anomaly_score" }:
   }, [rows]);
 
   const sortedRows = useMemo(() => {
-    const copy = [...rows];
+    const copy = [...(rows || [])];
     copy.sort((r1, r2) => compareValues(r1?.[sortKey], r2?.[sortKey], sortDir));
     return copy;
   }, [rows, sortKey, sortDir]);
@@ -48,73 +51,65 @@ export default function ResultsTable({ rows, defaultSortKey = "anomaly_score" }:
       setSortDir((d) => (d === "asc" ? "desc" : "asc"));
     } else {
       setSortKey(col);
-      // sensible default: anomaly_score sorts high->low first
       setSortDir(col === "anomaly_score" ? "desc" : "asc");
     }
   }
 
   if (!rows?.length) {
-    return <div className="text-sm text-zinc-500">No rows to display.</div>;
+    return <div style={{ opacity: 0.8 }}>No rows to display.</div>;
   }
 
   return (
     <div>
-      {/* Controls */}
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setSortDir((d) => (d === "asc" ? "desc" : "asc"))}
-            className="rounded-xl border border-zinc-800 bg-zinc-950/60 px-3 py-2 text-xs font-semibold text-zinc-200 hover:bg-zinc-900"
-          >
-            Toggle sort ({sortDir})
-          </button>
-          <div className="text-xs text-zinc-400">
-            Sorting by <span className="font-semibold text-zinc-200">{sortKey}</span>
-          </div>
-        </div>
+      <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 10 }}>
+        <button
+          onClick={() => setSortDir((d) => (d === "asc" ? "desc" : "asc"))}
+          style={{ padding: "6px 10px", borderRadius: 8 }}
+        >
+          Toggle sort ({sortDir})
+        </button>
 
-        <div className="text-xs text-zinc-500">Click a column header to sort</div>
+        <div style={{ opacity: 0.8 }}>
+          Sorting by <b>{sortKey}</b>
+        </div>
       </div>
 
-      {/* Table */}
-      <div className="mt-3 overflow-auto rounded-2xl border border-zinc-900">
-        <table className="min-w-full text-sm">
-          <thead className="sticky top-0 bg-zinc-950/80 backdrop-blur text-zinc-300">
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
             <tr>
-              {columns.map((col) => {
-                const active = sortKey === col;
-                return (
-                  <th
-                    key={col}
-                    onClick={() => onHeaderClick(col)}
-                    className={`px-3 py-2 text-left whitespace-nowrap select-none cursor-pointer ${
-                      active ? "text-zinc-100" : ""
-                    }`}
-                    title="Click to sort"
-                  >
-                    {col}
-                    {active ? (
-                      <span className="ml-1 text-zinc-400">{sortDir === "asc" ? "↑" : "↓"}</span>
-                    ) : null}
-                  </th>
-                );
-              })}
+              {columns.map((col) => (
+                <th
+                  key={col}
+                  onClick={() => onHeaderClick(col)}
+                  style={{
+                    textAlign: "left",
+                    padding: "8px 10px",
+                    cursor: "pointer",
+                    borderBottom: "1px solid rgba(255,255,255,0.12)",
+                    whiteSpace: "nowrap",
+                  }}
+                  title="Click to sort"
+                >
+                  {col}
+                  {sortKey === col ? (sortDir === "asc" ? " ↑" : " ↓") : ""}
+                </th>
+              ))}
             </tr>
           </thead>
 
-          <tbody className="divide-y divide-zinc-900">
-            {sortedRows.map((row, idx) => {
-              const isAnom =
-                "is_anomaly" in row &&
-                (row["is_anomaly"] === 1 ||
-                  row["is_anomaly"] === "1" ||
-                  row["is_anomaly"] === true ||
-                  row["is_anomaly"] === "true");
-
+          <tbody>
+            {sortedRows.map((row, i) => {
+              const isAnom = String(row?.is_anomaly) === "1" || row?.is_anomaly === 1;
               return (
-                <tr key={idx} className={isAnom ? "bg-emerald-950/20" : "hover:bg-zinc-900/30"}>
+                <tr
+                  key={i}
+                  style={{
+                    background: isAnom ? "rgba(0, 255, 150, 0.08)" : "transparent",
+                  }}
+                >
                   {columns.map((col) => (
-                    <td key={col} className="px-3 py-2 text-xs text-zinc-200 whitespace-nowrap">
+                    <td key={col} style={{ padding: "8px 10px", borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
                       {String(row?.[col] ?? "")}
                     </td>
                   ))}
