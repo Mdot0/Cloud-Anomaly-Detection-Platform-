@@ -481,7 +481,7 @@ export default function App() {
                 <Pill>Auto-highlight anomalies</Pill>
               </div>
 
-              <div className="mt-4 overflow-auto rounded-2xl border border-zinc-900 p-3">
+              <div className="mt-4">
                 <ResultsTable rows={rows} />
               </div>
 
