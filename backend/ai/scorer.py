@@ -22,6 +22,26 @@ def _model_path() -> Path:
     return backend_dir / "models" / "logon_iforest_v1.joblib"
 
 
+def _dummy_score_df(df: pd.DataFrame, upload_id: str, scored_at: str, notes: str) -> Tuple[bytes, Dict[str, Any]]:
+    model_version = "dummy-v0"
+    df = df.copy()
+    df["anomaly_score"] = 0.0
+    df["is_anomaly"] = 0
+    df["model_version"] = model_version
+    df["scored_at"] = scored_at
+
+    summary = {
+        "upload_id": upload_id,
+        "rows": int(len(df)),
+        "anomalies": 0,
+        "threshold": None,
+        "model_version": model_version,
+        "scored_at": scored_at,
+        "notes": notes,
+    }
+    return df.to_csv(index=False).encode("utf-8"), summary
+
+
 def score_csv_bytes(raw_csv: bytes, upload_id: str) -> Tuple[bytes, Dict[str, Any]]:
     """
     Production interface used by Azure Functions.
@@ -44,32 +64,32 @@ def score_csv_bytes(raw_csv: bytes, upload_id: str) -> Tuple[bytes, Dict[str, An
 
     # ---------- Fallback: dummy mode if model missing ----------
     if not model_file.exists():
-        model_version = "dummy-v0"
-        df["anomaly_score"] = 0.0
-        df["is_anomaly"] = 0
-        df["model_version"] = model_version
-        df["scored_at"] = scored_at
-
-        summary = {
-            "upload_id": upload_id,
-            "rows": rows,
-            "anomalies": 0,
-            "threshold": None,
-            "model_version": model_version,
-            "scored_at": scored_at,
-            "notes": f"Model not found at {str(model_file)}; dummy scoring used.",
-        }
-        return df.to_csv(index=False).encode("utf-8"), summary
+        return _dummy_score_df(
+            df,
+            upload_id=upload_id,
+            scored_at=scored_at,
+            notes=f"Model not found at {str(model_file)}; dummy scoring used.",
+        )
 
     # ---------- Real scoring ----------
     model = joblib.load(model_file)
     model_version = "iforest-v1"
 
-    # Build numeric features for logon.csv
-    X = build_logon_features(df)
+    # Build numeric features for logon.csv (may fail if wrong schema)
+    try:
+        X = build_logon_features(df)
 
-    # IsolationForest decision_function: higher = more normal -> invert
-    scores = (-model.decision_function(X)).astype(float)
+        # IsolationForest decision_function: higher = more normal -> invert
+        scores = (-model.decision_function(X)).astype(float)
+
+    except Exception as e:
+        # KeyError('date') or any schema / parsing error -> don't crash the worker
+        return _dummy_score_df(
+            df,
+            upload_id=upload_id,
+            scored_at=scored_at,
+            notes=f"Scoring skipped (logon feature/schema mismatch): {repr(e)}",
+        )
 
     # Threshold: mark top 1% as anomalies (stable baseline)
     # If file is tiny, avoid marking everything as anomaly
