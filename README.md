@@ -119,29 +119,8 @@ Each row in the scored CSV includes:
 
 ## Repository Structure
 
-.
-├── frontend/ # React + Vite web UI
-│ └── src/
-│ └── components/
-│ └── ResultsTable.tsx
-│
-├── backend/ # Azure Functions backend
-│ ├── function_app.py # API routes and orchestration
-│ ├── ai/
-│ │ └── scorer.py # Production inference interface
-│ └── models/ # Exported model artifacts
-│
-├── ml/ # Training & research (NOT deployed)
-│ ├── feature_engineering.py
-│ ├── anomaly_model.py
-│ ├── train_model.py
-│ ├── score_logs.py
-│ └── notebooks/
-│
-└── .github/workflows/ # CI/CD (GitHub Actions)
+<img width="330" height="403" alt="image" src="https://github.com/user-attachments/assets/c350d611-cc8b-4067-88a3-06cbc3bd72a0" />
 
-markdown
-Copy code
 
 ### Key Design Rule
 **Training code is never mixed with production backend code.**
