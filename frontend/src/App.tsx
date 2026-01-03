@@ -3,6 +3,8 @@ import { analyzeUpload, getResults, listUploads, uploadLogs } from "./api";
 import type { AnalyzeSummary, UploadItem } from "./types";
 import { Dropzone } from "./components/Dropzone";
 import { Toast, type ToastState } from "./components/Toast";
+import ResultsTable from "./components/ResultsTable";
+
 
 function uploadIdFromBlob(blob: string) {
   return blob?.endsWith(".csv") ? blob.slice(0, -4) : blob;
@@ -479,42 +481,10 @@ export default function App() {
                 <Pill>Auto-highlight anomalies</Pill>
               </div>
 
-              <div className="mt-4 overflow-auto rounded-2xl border border-zinc-900">
-                <table className="min-w-full text-sm">
-                  <thead className="sticky top-0 bg-zinc-950/80 backdrop-blur text-zinc-300">
-                    <tr>
-                      {previewCols.map((k) => (
-                        <th key={k} className="px-3 py-2 text-left whitespace-nowrap">
-                          {k}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-zinc-900">
-                    {rows.map((r, idx) => {
-                      const isAnom =
-                        "is_anomaly" in r &&
-                        (r["is_anomaly"] === 1 ||
-                          r["is_anomaly"] === "1" ||
-                          r["is_anomaly"] === true ||
-                          r["is_anomaly"] === "true");
-
-                      return (
-                        <tr
-                          key={idx}
-                          className={isAnom ? "bg-emerald-950/20" : "hover:bg-zinc-900/30"}
-                        >
-                          {previewCols.map((k) => (
-                            <td key={k} className="px-3 py-2 text-xs text-zinc-200 whitespace-nowrap">
-                              {String(r[k] ?? "")}
-                            </td>
-                          ))}
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
+              <div className="mt-4 overflow-auto rounded-2xl border border-zinc-900 p-3">
+                <ResultsTable rows={rows} />
               </div>
+
             </section>
           )}
 
