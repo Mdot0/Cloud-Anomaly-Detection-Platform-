@@ -74,8 +74,48 @@ Backend:
 results/scored/<upload_id>.csv
 results/summary/<upload_id>.json
 
-markdown
-Copy code
+Queue-Based Analysis Trigger (Automation)
+
+The upload automatically enqueues a message into a Service Bus queue (e.g. analyze-job).
+
+This enables:
+
+background processing
+
+retries on failure
+
+horizontal scaling
+
+No user interaction is required beyond upload.
+
+3. Queue Worker Executes (Backend)
+
+The queue message triggers the worker function:
+
+analyze_worker (Service Bus trigger)
+
+
+The worker:
+
+Parses the queue message
+
+Downloads the CSV from:
+
+logs/<upload_id>.csv
+
+
+Calls the AI scoring contract:
+
+score_csv_bytes(raw_csv, upload_id)
+
+
+This worker is not HTTP-based, so:
+
+it can take minutes
+
+it won’t timeout user requests
+
+failures are retried automatically
 
 ### 3. View Results
 Frontend → `GET /api/results?upload_id=...&limit=N`
