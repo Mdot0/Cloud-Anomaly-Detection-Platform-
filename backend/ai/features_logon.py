@@ -1,10 +1,15 @@
 import numpy as np
 import pandas as pd
 
+LOGON_REQUIRED_COLS = {"date", "user", "pc", "activity"}
+
 def build_logon_features(df: pd.DataFrame) -> np.ndarray:
     df = df.copy()
 
-    # Parse LANL-style date: "01/04/2010 00:10:37"
+    missing = LOGON_REQUIRED_COLS - set(df.columns)
+    if missing:
+        raise ValueError(f"logon.csv schema mismatch. Missing columns: {sorted(missing)}")
+
     ts = pd.to_datetime(df["date"], errors="coerce", format="%m/%d/%Y %H:%M:%S")
     df["hour"] = ts.dt.hour.fillna(0).astype(int)
     df["dow"] = ts.dt.dayofweek.fillna(0).astype(int)
@@ -14,7 +19,6 @@ def build_logon_features(df: pd.DataFrame) -> np.ndarray:
     df["is_logon"] = (act == "Logon").astype(int)
     df["is_logoff"] = (act == "Logoff").astype(int)
 
-    # Within-file frequency features
     user_counts = df["user"].value_counts(dropna=False)
     pc_counts = df["pc"].value_counts(dropna=False)
     df["user_event_count"] = df["user"].map(user_counts).fillna(1).astype(int)
