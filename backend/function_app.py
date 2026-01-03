@@ -516,3 +516,128 @@ def get_results(req: func.HttpRequest) -> func.HttpResponse:
     except Exception as e:
         logging.exception("Error in get_results")
         return _json(req, {"error": str(e)}, 500)
+
+
+# ============================================================
+# ADDED: Queue-based analysis worker (Service Bus trigger)
+# ============================================================
+@app.function_name(name="analyze_worker")
+@app.service_bus_queue_trigger(
+    arg_name="msg",
+    queue_name="%ANALYZE_QUEUE_NAME%",
+    connection="SERVICEBUS_CONNECTION",
+)
+def analyze_worker(msg: func.ServiceBusMessage) -> None:
+    """
+    Queue worker: consumes analyze jobs and produces results asynchronously.
+
+    Message body JSON (enqueued by upload_logs):
+      {
+        "upload_id": "...",
+        "container": "logs",
+        "blob": "<upload_id>.csv",
+        "requested_at": "..."
+      }
+
+    Writes:
+      results/scored/<upload_id>.csv
+      results/summary/<upload_id>.json
+    """
+    t0 = time.time()
+
+    try:
+        from azure.storage.blob import BlobServiceClient
+    except ImportError:
+        logging.exception("azure-storage-blob is not installed")
+        return
+
+    conn_str = os.environ.get("AzureWebJobsStorage")
+    if not conn_str:
+        logging.error("Missing AzureWebJobsStorage in app settings.")
+        return
+
+    # Parse queue message
+    try:
+        payload = json.loads(msg.get_body().decode("utf-8"))
+    except Exception:
+        logging.exception("Invalid Service Bus message JSON")
+        return
+
+    upload_id = payload.get("upload_id")
+    logs_container = payload.get("container", "logs")
+    input_blob = payload.get("blob") or (f"{upload_id}.csv" if upload_id else None)
+
+    if not upload_id or not input_blob:
+        logging.error(f"Worker message missing upload_id/blob: {payload}")
+        return
+
+    results_container = "results"
+    scored_blob = f"scored/{upload_id}.csv"
+    summary_blob = f"summary/{upload_id}.json"
+
+    log_event("worker_analyze_started", upload_id=upload_id, input_blob=f"{logs_container}/{input_blob}")
+
+    try:
+        blob_service = BlobServiceClient.from_connection_string(conn_str)
+        logs_client = blob_service.get_container_client(logs_container)
+        results_client = blob_service.get_container_client(results_container)
+
+        # Ensure results container exists
+        try:
+            results_client.create_container()
+        except Exception:
+            pass
+
+        # Download raw CSV
+        in_blob_client = logs_client.get_blob_client(input_blob)
+        props = in_blob_client.get_blob_properties()
+        meta = props.metadata or {}
+        original_filename = meta.get("original_filename")
+
+        raw = in_blob_client.download_blob().readall()
+
+        # AI scoring: same production contract as HTTP analyze
+        scored_bytes, summary = score_csv_bytes(raw, upload_id=upload_id)
+
+        # Write outputs
+        results_client.get_blob_client(scored_blob).upload_blob(scored_bytes, overwrite=True)
+
+        summary.update(
+            {
+                "upload_id": upload_id,
+                "input_blob": f"{logs_container}/{input_blob}",
+                "output_blob": f"{results_container}/{scored_blob}",
+                "original_filename": original_filename,
+                "worker": True,
+            }
+        )
+
+        results_client.get_blob_client(summary_blob).upload_blob(
+            json.dumps(summary).encode("utf-8"),
+            overwrite=True,
+        )
+
+        dt_ms = int((time.time() - t0) * 1000)
+        analysis_duration_ms.record(dt_ms, {"endpoint": "worker"})
+
+        log_event(
+            "worker_analyze_complete",
+            upload_id=upload_id,
+            duration_ms=dt_ms,
+            rows=summary.get("rows", 0),
+            anomalies=summary.get("anomalies", 0),
+            model_version=summary.get("model_version"),
+        )
+
+    except Exception as e:
+        logging.exception("Worker analyze failed")
+
+        analysis_failures.add(1, {"endpoint": "worker"})
+
+        dt_ms = int((time.time() - t0) * 1000)
+        analysis_duration_ms.record(dt_ms, {"endpoint": "worker"})
+
+        log_event("worker_analyze_failed", upload_id=upload_id, duration_ms=dt_ms, error=str(e))
+
+        # Let Azure Functions handle retry/backoff; dead-letter if it keeps failing.
+        raise
