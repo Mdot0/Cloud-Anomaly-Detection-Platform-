@@ -1,10 +1,26 @@
 from __future__ import annotations
-import csv, io
+
+import io
 from datetime import datetime, timezone
-from typing import Tuple, Dict, Any
+from pathlib import Path
+from typing import Any, Dict, Tuple
+
+import numpy as np
+import pandas as pd
+import joblib
+
+from ai.features_logon import build_logon_features
+
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _model_path() -> Path:
+    # backend/ai/scorer.py -> backend/models/logon_iforest_v1.joblib
+    backend_dir = Path(__file__).resolve().parents[1]
+    return backend_dir / "models" / "logon_iforest_v1.joblib"
+
 
 def score_csv_bytes(raw_csv: bytes, upload_id: str) -> Tuple[bytes, Dict[str, Any]]:
     """
@@ -18,41 +34,67 @@ def score_csv_bytes(raw_csv: bytes, upload_id: str) -> Tuple[bytes, Dict[str, An
       scored_csv_bytes: CSV bytes with extra columns appended
       summary: dict written to results/summary/<upload_id>.json
     """
-    text = raw_csv.decode("utf-8-sig", errors="replace")
-    reader = csv.DictReader(io.StringIO(text))
-    fieldnames = reader.fieldnames or []
-
-    required_cols = ["anomaly_score", "is_anomaly", "model_version", "scored_at"]
-    for c in required_cols:
-        if c not in fieldnames:
-            fieldnames.append(c)
-
     scored_at = utc_now_iso()
-    model_version = "dummy-v0"  # partner will replace with real model version
 
-    out_buf = io.StringIO()
-    writer = csv.DictWriter(out_buf, fieldnames=fieldnames)
-    writer.writeheader()
+    # Read CSV to DataFrame (handles BOM)
+    df = pd.read_csv(io.BytesIO(raw_csv), encoding="utf-8-sig")
+    rows = int(len(df))
 
-    rows = 0
-    anomalies = 0
-    for row in reader:
-        # TODO: replace with real scoring
-        row["anomaly_score"] = "0.0"
-        row["is_anomaly"] = "0"
-        row["model_version"] = model_version
-        row["scored_at"] = scored_at
-        writer.writerow(row)
-        rows += 1
+    model_file = _model_path()
 
-    scored_bytes = out_buf.getvalue().encode("utf-8")
+    # ---------- Fallback: dummy mode if model missing ----------
+    if not model_file.exists():
+        model_version = "dummy-v0"
+        df["anomaly_score"] = 0.0
+        df["is_anomaly"] = 0
+        df["model_version"] = model_version
+        df["scored_at"] = scored_at
+
+        summary = {
+            "upload_id": upload_id,
+            "rows": rows,
+            "anomalies": 0,
+            "threshold": None,
+            "model_version": model_version,
+            "scored_at": scored_at,
+            "notes": f"Model not found at {str(model_file)}; dummy scoring used.",
+        }
+        return df.to_csv(index=False).encode("utf-8"), summary
+
+    # ---------- Real scoring ----------
+    model = joblib.load(model_file)
+    model_version = "iforest-v1"
+
+    # Build numeric features for logon.csv
+    X = build_logon_features(df)
+
+    # IsolationForest decision_function: higher = more normal -> invert
+    scores = (-model.decision_function(X)).astype(float)
+
+    # Threshold: mark top 1% as anomalies (stable baseline)
+    # If file is tiny, avoid marking everything as anomaly
+    if rows >= 200:
+        threshold = float(np.quantile(scores, 0.99))
+    else:
+        threshold = float("inf")
+
+    is_anom = (scores >= threshold).astype(int)
+    anomalies = int(is_anom.sum())
+
+    # Append required output columns
+    df["anomaly_score"] = scores
+    df["is_anomaly"] = is_anom
+    df["model_version"] = model_version
+    df["scored_at"] = scored_at
 
     summary = {
         "upload_id": upload_id,
         "rows": rows,
         "anomalies": anomalies,
-        "threshold": "none (dummy)",
+        "threshold": None if threshold == float("inf") else threshold,
         "model_version": model_version,
         "scored_at": scored_at,
+        "model_file": str(model_file),
     }
-    return scored_bytes, summary
+
+    return df.to_csv(index=False).encode("utf-8"), summary
