@@ -1,24 +1,36 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
+
 import pandas as pd
 
-from .feature_engineering import build_features
-from .anomaly_model import train_model, save_model
+from feature_engineering import build_logon_features
+from anomaly_model import MODEL_VERSION, default_paths, save_model, train_model
 
 
-def main():
+def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--csv", required=True, help="Path to training CSV (e.g., logon.csv)")
+    ap.add_argument("--csv", required=True, help="Path to logon.csv training file")
+    ap.add_argument("--contamination", type=float, default=0.01, help="Target anomaly rate (default 0.01)")
     args = ap.parse_args()
 
     df = pd.read_csv(args.csv)
-    X = build_features(df)
+    X = build_logon_features(df)
 
-    model = train_model(X)
-    save_model(model)
+    model = train_model(X, contamination=args.contamination)
 
-    print("Saved model to ml/artifacts/model.pkl")
+    paths = default_paths()
+
+    # Save local artifact (training record)
+    save_model(model, paths.local_artifact)
+
+    # Export production artifact (what backend loads)
+    save_model(model, paths.production_artifact)
+
+    print(f"[OK] Trained {MODEL_VERSION}")
+    print(f"[OK] Saved local artifact -> {paths.local_artifact}")
+    print(f"[OK] Exported production artifact -> {paths.production_artifact}")
 
 
 if __name__ == "__main__":
