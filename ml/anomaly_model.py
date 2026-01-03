@@ -1,22 +1,41 @@
 from __future__ import annotations
 
-import json
-import os
-import pickle
-from typing import Any, Optional
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
+import joblib
 import numpy as np
 from sklearn.ensemble import IsolationForest
 
 MODEL_VERSION = "iforest-v1"
-ARTIFACT_DIR = os.path.join(os.path.dirname(__file__), "artifacts")
-MODEL_PATH = os.path.join(ARTIFACT_DIR, "model.pkl")
 
 
-def train_model(X) -> Any:
+@dataclass(frozen=True)
+class ModelPaths:
+    # local training artifact
+    local_artifact: Path
+    # production export artifact (what backend loads)
+    production_artifact: Path
+
+
+def default_paths() -> ModelPaths:
+    ml_dir = Path(__file__).resolve().parent
+    repo_root = ml_dir.parent
+    return ModelPaths(
+        local_artifact=ml_dir / "artifacts" / "logon_iforest_v1.joblib",
+        production_artifact=repo_root / "backend" / "models" / "logon_iforest_v1.joblib",
+    )
+
+
+def train_model(X: np.ndarray, contamination: float = 0.01) -> Any:
+    """
+    Train IsolationForest for unsupervised anomaly detection.
+    contamination=0.01 means target ~1% anomalies (baseline).
+    """
     model = IsolationForest(
         n_estimators=200,
-        contamination="auto",
+        contamination=contamination,
         random_state=42,
         n_jobs=-1,
     )
@@ -24,32 +43,28 @@ def train_model(X) -> Any:
     return model
 
 
-def save_model(model: Any) -> None:
-    os.makedirs(ARTIFACT_DIR, exist_ok=True)
-    with open(MODEL_PATH, "wb") as f:
-        pickle.dump(model, f)
+def save_model(model: Any, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    joblib.dump(model, path)
 
 
-def load_model() -> Any:
-    if not os.path.exists(MODEL_PATH):
-        raise FileNotFoundError(
-            f"Model artifact not found at {MODEL_PATH}. Run ml/train_model.py first."
-        )
-    with open(MODEL_PATH, "rb") as f:
-        return pickle.load(f)
+def load_model(path: Path) -> Any:
+    if not path.exists():
+        raise FileNotFoundError(f"Model artifact not found: {path}")
+    return joblib.load(path)
 
 
-def score_samples(model: Any, X) -> np.ndarray:
+def score_samples(model: Any, X: np.ndarray) -> np.ndarray:
     """
-    IsolationForest returns anomaly score via decision_function (higher = more normal),
-    so we invert sign so higher means more anomalous.
+    sklearn IsolationForest: decision_function higher = more normal.
+    We invert so higher = more suspicious (matches API meaning).
     """
     normality = model.decision_function(X)
     return (-normality).astype(float)
 
 
-def pick_threshold(scores: np.ndarray, percentile: float = 95.0) -> float:
+def pick_threshold(scores: np.ndarray, percentile: float = 99.0) -> float:
     """
-    Pick threshold so top ~5% are flagged as anomalies.
+    percentile=99 means top 1% flagged as anomalies.
     """
     return float(np.percentile(scores, percentile))
