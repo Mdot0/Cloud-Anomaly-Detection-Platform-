@@ -13,6 +13,8 @@ import azure.functions as func
 from azure.monitor.opentelemetry import configure_azure_monitor
 from opentelemetry import metrics
 
+from ai.scorer import score_csv_bytes
+
 # ----------------------------
 # ADDED: Service Bus imports
 # ----------------------------
@@ -25,7 +27,11 @@ app = func.FunctionApp()
 # ------------------------------------------------------------
 # Exports logs/traces/metrics to Application Insights using
 # APPLICATIONINSIGHTS_CONNECTION_STRING from Function App settings.
-configure_azure_monitor()
+if os.environ.get("APPLICATIONINSIGHTS_CONNECTION_STRING"):
+    configure_azure_monitor()
+else:
+    logging.warning("Azure Monitor not configured (no APPLICATIONINSIGHTS_CONNECTION_STRING). Running local without telemetry.")
+
 
 meter = metrics.get_meter("cloudguard")
 
@@ -402,48 +408,22 @@ def analyze_upload(req: func.HttpRequest) -> func.HttpResponse:
 
         raw = in_blob_client.download_blob().readall()
 
-        # Dummy “scoring”: add required columns to each row
-        text = raw.decode("utf-8-sig", errors="replace")
-        reader = csv.DictReader(io.StringIO(text))
-        fieldnames = reader.fieldnames or []
+        # AI scoring: delegate to backend/ai/scorer.py
+        scored_bytes, summary = score_csv_bytes(raw, upload_id=upload_id)
 
-        required_cols = ["anomaly_score", "is_anomaly", "model_version", "scored_at"]
-        for c in required_cols:
-            if c not in fieldnames:
-                fieldnames.append(c)
-
-        scored_at = utc_now_iso()
-        model_version = "dummy-v0"
-
-        out_buf = io.StringIO()
-        writer = csv.DictWriter(out_buf, fieldnames=fieldnames)
-        writer.writeheader()
-
-        rows = 0
-        anomalies = 0
-        for row in reader:
-            row["anomaly_score"] = "0.0"
-            row["is_anomaly"] = "0"
-            row["model_version"] = model_version
-            row["scored_at"] = scored_at
-            writer.writerow(row)
-            rows += 1
-
-        scored_bytes = out_buf.getvalue().encode("utf-8")
-
+        # Store scored CSV in results container
         results_client.get_blob_client(scored_blob).upload_blob(scored_bytes, overwrite=True)
 
-        summary = {
-            "upload_id": upload_id,
-            "input_blob": f"{logs_container}/{input_blob}",
-            "output_blob": f"{results_container}/{scored_blob}",
-            "rows": rows,
-            "anomalies": anomalies,
-            "threshold": "none (dummy)",
-            "model_version": model_version,
-            "scored_at": scored_at,
-            "original_filename": original_filename,
-        }
+        # Add fields that are pipeline-specific (blob paths, original filename)
+        summary.update(
+            {
+                "upload_id": upload_id,
+                "input_blob": f"{logs_container}/{input_blob}",
+                "output_blob": f"{results_container}/{scored_blob}",
+                "original_filename": original_filename,
+            }
+        )
+
 
         results_client.get_blob_client(summary_blob).upload_blob(
             json.dumps(summary).encode("utf-8"),
@@ -458,9 +438,9 @@ def analyze_upload(req: func.HttpRequest) -> func.HttpResponse:
             endpoint="analyze",
             upload_id=upload_id,
             duration_ms=dt_ms,
-            rows=rows,
-            anomalies=anomalies,
-            model_version=model_version,
+            rows=summary.get("rows", 0),
+            anomalies=summary.get("anomalies", 0),
+            model_version=summary.get("model_version"),
         )
 
         return _json(req, summary, 200)
