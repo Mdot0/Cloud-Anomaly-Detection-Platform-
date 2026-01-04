@@ -1,4 +1,4 @@
-name: Deploy Azure Functions (Backend)
+name: Deploy Azure Functions (Backend) - func publish
 
 on:
   push:
@@ -8,9 +8,6 @@ on:
       - ".github/workflows/main_cloudguard-backend-new.yml"
   workflow_dispatch: {}
 
-env:
-  PYTHON_VERSION: "3.11"
-
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -19,20 +16,7 @@ jobs:
       contents: read
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-
-      # Optional: quick sanity check so we don't deploy junk
-      - name: Validate Functions project files
-        run: |
-          test -f backend/host.json || (echo "ERROR: backend/host.json missing" && exit 1)
-          test -f backend/function_app.py || (echo "ERROR: backend/function_app.py missing" && exit 1)
-          test -f backend/requirements.txt || (echo "ERROR: backend/requirements.txt missing" && exit 1)
+      - uses: actions/checkout@v4
 
       - name: Azure Login (OIDC)
         uses: azure/login@v2
@@ -41,11 +25,22 @@ jobs:
           tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_47B3FF8906C2400DBB120ACAB44DAB2E }}
           subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_D6D502B93A214FE9A4D2615E680689C2 }}
 
-      - name: Deploy to Azure Functions (build on deploy)
-        uses: Azure/functions-action@v1
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
         with:
-          app-name: cloudguard-backend-new
-          package: backend
-          scm-do-build-during-deployment: true
-          enable-oryx-build: true
+          python-version: "3.11"
 
+      - name: Validate Functions files
+        run: |
+          test -f backend/host.json || (echo "ERROR: backend/host.json missing" && exit 1)
+          test -f backend/function_app.py || (echo "ERROR: backend/function_app.py missing" && exit 1)
+          test -f backend/requirements.txt || (echo "ERROR: backend/requirements.txt missing" && exit 1)
+
+      - name: Install Azure Functions Core Tools v4
+        run: |
+          npm i -g azure-functions-core-tools@4 --unsafe-perm true
+
+      - name: Publish (same as your local working deploy)
+        working-directory: backend
+        run: |
+          func azure functionapp publish cloudguard-backend-new --python --build remote
