@@ -9,17 +9,17 @@ on:
   workflow_dispatch: {}
 
 env:
-  AZURE_FUNCTIONAPP_PACKAGE_PATH: "backend"
   PYTHON_VERSION: "3.11"
 
 jobs:
-  build:
+  deploy:
     runs-on: ubuntu-latest
     permissions:
+      id-token: write
       contents: read
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup Python
@@ -27,53 +27,24 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Install dependencies
-        working-directory: ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
+      # Optional: quick sanity check so we don't deploy junk
       - name: Validate Functions project files
-        working-directory: ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
         run: |
-          test -f host.json || (echo "ERROR: host.json missing in backend/" && exit 1)
-          test -f function_app.py || (echo "ERROR: function_app.py missing in backend/" && exit 1)
+          test -f backend/host.json || (echo "ERROR: backend/host.json missing" && exit 1)
+          test -f backend/function_app.py || (echo "ERROR: backend/function_app.py missing" && exit 1)
+          test -f backend/requirements.txt || (echo "ERROR: backend/requirements.txt missing" && exit 1)
 
-      - name: Zip artifact for deployment
-        run: |
-          cd ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
-          zip -r ../release.zip . -x "*.venv/*" "venv/*" "__pycache__/*"
-          cd ..
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: functionapp
-          path: release.zip
-
-  deploy:
-    runs-on: ubuntu-latest
-    needs: build
-    permissions:
-      id-token: write
-      contents: read
-
-    steps:
-      - name: Download artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: functionapp
-
-      - name: Login to Azure (OIDC)
+      - name: Azure Login (OIDC)
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_033334472A7F49C881A7081C2C95CF0B }}
           tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_47B3FF8906C2400DBB120ACAB44DAB2E }}
           subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_D6D502B93A214FE9A4D2615E680689C2 }}
 
-      - name: Deploy to Azure Functions
+      - name: Deploy to Azure Functions (build on deploy)
         uses: Azure/functions-action@v1
         with:
-          app-name: "cloudguard-backend-new"
-          package: release.zip
-
+          app-name: cloudguard-backend-new
+          package: backend
+          scm-do-build-during-deployment: true
+          enable-oryx-build: true
