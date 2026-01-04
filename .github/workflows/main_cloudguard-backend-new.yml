@@ -74,5 +74,6 @@ jobs:
       - name: Deploy to Azure Functions
         uses: Azure/functions-action@v1
         with:
-          app-name: "cloudguard-backend-new-e7hechafgxafhsax"
+          app-name: "cloudguard-backend-new"
           package: release.zip
+
