@@ -561,7 +561,7 @@ def analyze_worker(msg: func.ServiceBusMessage) -> None:
         payload = json.loads(msg.get_body().decode("utf-8"))
     except Exception:
         logging.exception("Invalid Service Bus message JSON")
-        return
+        raise
 
     upload_id = payload.get("upload_id")
     logs_container = payload.get("container", "logs")
@@ -569,7 +569,7 @@ def analyze_worker(msg: func.ServiceBusMessage) -> None:
 
     if not upload_id or not input_blob:
         logging.error(f"Worker message missing upload_id/blob: {payload}")
-        return
+        raise ValueError("Missing upload_id/blob")
 
     results_container = "results"
     scored_blob = f"scored/{upload_id}.csv"
