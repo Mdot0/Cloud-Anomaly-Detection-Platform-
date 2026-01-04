@@ -21,7 +21,7 @@ jobs:
       - name: Build (inject VITE_API_BASE)
         working-directory: frontend
         env:
-          VITE_API_BASE: https://cloudguard-backend-new-e7hechafgxafhsax.westus2-01.azurewebsites.net/api
+          VITE_API_BASE: https://cloudguard-backend-new-e7hechafgxafhsax.westus2-01.azurewebsites.net
         run: npm run build
 
       - name: Deploy prebuilt dist
@@ -33,3 +33,4 @@ jobs:
           skip_app_build: true
           api_location: ""
           output_location: ""
+
