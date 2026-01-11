@@ -1,0 +1,18 @@
+location            = "westus2"
+resource_group_name = "cloud-guard-ai-rg"
+
+storage_account_name = "guardstorage"
+function_app_name    = "cloudguard-backend-new"
+
+servicebus_namespace_name = "analyze-jobs"
+analyze_queue_name        = "analyze-job"
+
+# Put your SWA domain here once you have it.
+cors_allowed_origins = "https://YOUR-STATIC-WEB-APP.azurestaticapps.net"
+
+# Flex plan. If it fails, switch to "Y1".
+function_plan_sku = "FC1"
+
+# Only set true if you want TF to create/manage SWA resource
+create_static_web_app = false
+static_web_app_name   = "CloudguardApp"
