@@ -10,9 +10,8 @@ resource "azurerm_servicebus_namespace" "sb" {
 resource "azurerm_servicebus_queue" "analyze" {
   name         = var.analyze_queue_name
   namespace_id = azurerm_servicebus_namespace.sb.id
-
-  enable_partitioning = true
 }
+
 
 # Authorization rule that gives your Function App access to the namespace
 resource "azurerm_servicebus_namespace_authorization_rule" "app" {
