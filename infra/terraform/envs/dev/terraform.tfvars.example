@@ -1,18 +1,29 @@
 location            = "westus2"
-resource_group_name = "cloud-guard-ai-rg"
 
-storage_account_name = "guardstorage"
-function_app_name    = "cloudguard-backend-new"
+# NEW dev RG (no conflict)
+resource_group_name = "cloud-guard-ai-rg-dev"
 
-servicebus_namespace_name = "analyze-jobs"
-analyze_queue_name        = "analyze-job"
+# Storage account must be globally unique, lowercase, 3-24 chars
+# Change this if it says "already taken"
+storage_account_name = "guardstoragedev01"
 
-# Put your SWA domain here once you have it.
-cors_allowed_origins = "https://YOUR-STATIC-WEB-APP.azurestaticapps.net"
+# NEW dev Function App name (must be globally unique in Azure)
+# If it errors, change the suffix
+function_app_name = "cloudguard-backend-dev"
 
-# Flex plan. If it fails, switch to "Y1".
+# Service Bus namespace must be globally unique
+servicebus_namespace_name = "analyze-jobs-dev"
+
+# Queue can be same name
+analyze_queue_name = "analyze-job"
+
+# CORS: put your SWA URL here once you know it.
+# For now, allow localhost and your SWA later.
+cors_allowed_origins = "http://localhost:5173"
+
+# Flex consumption. If it errors in your subscription, change to "Y1".
 function_plan_sku = "FC1"
 
-# Only set true if you want TF to create/manage SWA resource
+# Don’t create SWA via Terraform yet (optional)
 create_static_web_app = false
-static_web_app_name   = "CloudguardApp"
+static_web_app_name   = "CloudguardApp-dev"
