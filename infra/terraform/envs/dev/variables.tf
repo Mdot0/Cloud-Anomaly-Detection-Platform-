@@ -52,3 +52,9 @@ variable "create_static_web_app" {
   type    = bool
   default = false
 }
+
+variable "subscription_id" {
+  type      = string
+  sensitive = true
+}
+
