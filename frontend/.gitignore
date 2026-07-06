@@ -9,6 +9,8 @@ backend/local.settings.json
 frontend/.env
 backend/.env
 backend/.env.*
+src/.env.production
+.envrc
 
 # =========================
 # Node / frontend

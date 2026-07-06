@@ -10,6 +10,12 @@ import pandas as pd
 import joblib
 
 from ai.features_logon import build_logon_features
+from ai.investigation import build_subject_summaries
+
+# Mirrors ml/anomaly_model.py:MODEL_VERSION -- kept as a separate constant here (not imported)
+# because backend/ai/ deliberately never imports from ml/ (see CLAUDE.md training/inference split).
+MODEL_VERSION = "iforest-v1"
+DUMMY_MODEL_VERSION = "dummy-v0"
 
 
 def utc_now_iso() -> str:
@@ -23,7 +29,7 @@ def _model_path() -> Path:
 
 
 def _dummy_score_df(df: pd.DataFrame, upload_id: str, scored_at: str, notes: str) -> Tuple[bytes, Dict[str, Any]]:
-    model_version = "dummy-v0"
+    model_version = DUMMY_MODEL_VERSION
     df = df.copy()
     df["anomaly_score"] = 0.0
     df["is_anomaly"] = 0
@@ -72,12 +78,16 @@ def score_csv_bytes(raw_csv: bytes, upload_id: str) -> Tuple[bytes, Dict[str, An
         )
 
     # ---------- Real scoring ----------
-    model = joblib.load(model_file)
-    model_version = "iforest-v1"
+    artifact = joblib.load(model_file)
+    model, baseline = artifact["model"], artifact["baseline"]
+    model_version = MODEL_VERSION
 
     # Build numeric features for logon.csv (may fail if wrong schema)
     try:
-        X = build_logon_features(df)
+        # Score against the trained baseline, not this upload's own within-file frequency --
+        # rarity should reflect how unusual something is historically, not how unusual it is
+        # relative to whatever else happens to be in this particular file.
+        X = build_logon_features(df, baseline=baseline)
 
         # IsolationForest decision_function: higher = more normal -> invert
         scores = (-model.decision_function(X)).astype(float)
@@ -107,6 +117,10 @@ def score_csv_bytes(raw_csv: bytes, upload_id: str) -> Tuple[bytes, Dict[str, An
     df["model_version"] = model_version
     df["scored_at"] = scored_at
 
+    # Per-user investigative summary: "was this person's behavior weird", not just "which
+    # rows are weird" -- the actual question for an insider-threat/offboarding investigation.
+    subjects = build_subject_summaries(df, baseline)
+
     summary = {
         "upload_id": upload_id,
         "rows": rows,
@@ -115,6 +129,7 @@ def score_csv_bytes(raw_csv: bytes, upload_id: str) -> Tuple[bytes, Dict[str, An
         "model_version": model_version,
         "scored_at": scored_at,
         "model_file": str(model_file),
+        "subjects": subjects,
     }
 
     return df.to_csv(index=False).encode("utf-8"), summary

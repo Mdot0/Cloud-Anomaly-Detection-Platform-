@@ -1,0 +1,29 @@
+[project]
+name = "cloudguard"
+version = "0.1.0"
+description = "Local dev environment for CloudGuard (backend + ml). Managed by uv/direnv."
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    # Only packages actually imported by backend/ or ml/ (verified via grep for top-level
+    # imports). Everything else in backend/requirements.txt is a transitive dependency of these
+    # (Azure SDK plumbing like idna/six/cffi/msal/etc.) — uv resolves and pins those in uv.lock,
+    # same role package-lock.json plays for npm, so this list stays a manifest of what the code
+    # uses rather than a full pip-freeze dump.
+    #
+    # Azure Functions deployment is unaffected by this file — it installs from
+    # backend/requirements.txt via remote Oryx build, not from pyproject.toml/uv.
+    "azure-functions==1.24.0",
+    "azure-storage-blob==12.27.1",
+    "azure-servicebus==7.14.3",
+    "azure-monitor-opentelemetry==1.8.3",
+    "opentelemetry-api==1.39.0",
+    "pandas==2.3.3",
+    "numpy==2.3.5",
+    "scikit-learn==1.7.2",  # not imported directly, but required to unpickle the trained model
+    "joblib==1.5.2",
+    "pydantic>=2.13.4",
+    "azure-core>=1.36.0",
+]
+
+[tool.uv]
+package = false

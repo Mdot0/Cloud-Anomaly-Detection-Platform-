@@ -43,12 +43,18 @@ def train_model(X: np.ndarray, contamination: float = 0.01) -> Any:
     return model
 
 
-def save_model(model: Any, path: Path) -> None:
+def save_model(model: Any, baseline: dict[str, Any], path: Path) -> None:
+    """
+    Bundles the trained model together with its frequency baseline (see
+    feature_engineering.py:build_baseline_counts) in one artifact, so scoring code only ever
+    has to load one file to get both the model and the historical rarity data it depends on.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    joblib.dump(model, path)
+    joblib.dump({"model": model, "baseline": baseline}, path)
 
 
-def load_model(path: Path) -> Any:
+def load_model(path: Path) -> dict[str, Any]:
+    """Returns {"model": <IsolationForest>, "baseline": <dict from build_baseline_counts>}."""
     if not path.exists():
         raise FileNotFoundError(f"Model artifact not found: {path}")
     return joblib.load(path)

@@ -11,6 +11,24 @@ export type UploadsResponse = {
   items: UploadItem[];
 };
 
+export type FlaggedEvent = {
+  date: string;
+  pc: string;
+  activity: string;
+  anomaly_score: number;
+};
+
+export type SubjectSummary = {
+  user: string;
+  event_count: number;
+  distinct_pcs: number;
+  new_pcs: string[];
+  off_hours_pct: number;
+  risk_score: number;
+  mean_anomaly_score: number;
+  flagged_events: FlaggedEvent[];
+};
+
 export type AnalyzeSummary = {
   upload_id: string;
   input_blob: string;
@@ -21,6 +39,7 @@ export type AnalyzeSummary = {
   model_version: string;
   scored_at: string;
   original_filename?: string | null;
+  subjects: SubjectSummary[];
 };
 
 export type ResultsResponse = {

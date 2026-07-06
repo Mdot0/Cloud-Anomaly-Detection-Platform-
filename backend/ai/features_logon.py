@@ -1,31 +1,55 @@
+from typing import Any
+
 import numpy as np
 import pandas as pd
 
 LOGON_REQUIRED_COLS = {"date", "user", "pc", "activity"}
 
-def build_logon_features(df: pd.DataFrame) -> np.ndarray:
+
+def parse_datetime_parts(df: pd.DataFrame) -> tuple[pd.Series, pd.Series, pd.Series]:
+    """Returns (hour, dow, is_weekend[bool]) parsed from df["date"] (LANL-style:
+    "01/04/2010 00:10:37"). Shared by build_logon_features and ai/investigation.py so the two
+    don't independently re-parse the same column."""
+    ts = pd.to_datetime(df["date"], errors="coerce", format="%m/%d/%Y %H:%M:%S")
+    hour = ts.dt.hour.fillna(0).astype(int)
+    dow = ts.dt.dayofweek.fillna(0).astype(int)
+    is_weekend = dow >= 5
+    return hour, dow, is_weekend
+
+
+def build_baseline_counts(df: pd.DataFrame) -> dict[str, Any]:
+    user_counts = {k: int(v) for k, v in df["user"].value_counts(dropna=False).items()}
+    pc_counts = {k: int(v) for k, v in df["pc"].value_counts(dropna=False).items()}
+    user_pc_counts = {k: int(v) for k, v in df.groupby(["user", "pc"]).size().items()}
+    return {"user_counts": user_counts, "pc_counts": pc_counts, "user_pc_counts": user_pc_counts}
+
+
+def build_logon_features(df: pd.DataFrame, baseline: dict[str, Any] | None = None) -> np.ndarray:
     df = df.copy()
 
     missing = LOGON_REQUIRED_COLS - set(df.columns)
     if missing:
         raise ValueError(f"logon.csv schema mismatch. Missing columns: {sorted(missing)}")
 
-    ts = pd.to_datetime(df["date"], errors="coerce", format="%m/%d/%Y %H:%M:%S")
-    df["hour"] = ts.dt.hour.fillna(0).astype(int)
-    df["dow"] = ts.dt.dayofweek.fillna(0).astype(int)
-    df["is_weekend"] = (df["dow"] >= 5).astype(int)
+    hour, dow, is_weekend = parse_datetime_parts(df)
+    df["hour"] = hour
+    df["dow"] = dow
+    df["is_weekend"] = is_weekend.astype(int)
 
     act = df["activity"].astype("string").fillna("NA")
     df["is_logon"] = (act == "Logon").astype(int)
     df["is_logoff"] = (act == "Logoff").astype(int)
 
-    user_counts = df["user"].value_counts(dropna=False)
-    pc_counts = df["pc"].value_counts(dropna=False)
+    if baseline is None:
+        baseline = build_baseline_counts(df)
+
+    user_counts = baseline["user_counts"]
+    pc_counts = baseline["pc_counts"]
+    user_pc_counts = baseline["user_pc_counts"]
+
     df["user_event_count"] = df["user"].map(user_counts).fillna(1).astype(int)
     df["pc_event_count"] = df["pc"].map(pc_counts).fillna(1).astype(int)
-
-    user_pc_counts = df.groupby(["user", "pc"]).size()
-    df["user_pc_count"] = [user_pc_counts.get((u, p), 1) for u, p in zip(df["user"], df["pc"])]
+    df["user_pc_count"] = [int(user_pc_counts.get((u, p), 1)) for u, p in zip(df["user"], df["pc"])]
 
     df["inv_user_event_count"] = 1.0 / df["user_event_count"].clip(lower=1)
     df["inv_pc_event_count"] = 1.0 / df["pc_event_count"].clip(lower=1)

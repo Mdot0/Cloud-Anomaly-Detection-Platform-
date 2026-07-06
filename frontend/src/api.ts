@@ -72,18 +72,12 @@ export async function listUploads(limit = 25): Promise<any> {
   return await res.json();
 }
 
-export async function analyzeUpload(uploadId: string): Promise<any> {
-  const url = `${API_BASE}/analyze?upload_id=${encodeURIComponent(uploadId)}`;
-
-  const res = await fetch(url, { method: "POST" });
-  if (!res.ok) throw new Error(await readError(res));
-  return await res.json();
-}
-
 /**
- * In queue mode, results may not exist yet.
- * Backend currently returns 404 when missing; we treat 404/202 as "processing"
- * so the UI can show "still running" instead of "broken".
+ * Analysis is always async: upload enqueues a Service Bus job, and the queue worker
+ * produces results in the background -- there is no synchronous "analyze" call. Results may
+ * not exist yet by the time this is called; the backend returns 404 when missing (202 is also
+ * handled defensively in case that ever changes), which we treat as "processing" so the UI can
+ * show "still running" instead of "broken".
  */
 export async function getResults(uploadId: string, limit = 100): Promise<any> {
   const url = `${API_BASE}/results?upload_id=${encodeURIComponent(uploadId)}&limit=${encodeURIComponent(String(limit))}`;

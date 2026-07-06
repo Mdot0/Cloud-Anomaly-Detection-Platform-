@@ -16,10 +16,15 @@ def main() -> None:
     args = ap.parse_args()
 
     df = pd.read_csv(args.csv)
-    X = build_logon_features(df)
 
     paths = default_paths()
-    model = load_model(paths.production_artifact)
+    artifact = load_model(paths.production_artifact)
+    model, baseline = artifact["model"], artifact["baseline"]
+
+    # Score against the trained baseline (same as production), not within-file frequency --
+    # otherwise scoring the training set against itself trivially looks fine while a small
+    # real-world upload would score differently than production actually would.
+    X = build_logon_features(df, baseline=baseline)
 
     scores = score_samples(model, X)
     threshold = pick_threshold(scores, percentile=args.percentile)

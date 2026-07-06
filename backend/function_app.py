@@ -1,24 +1,36 @@
 # function_app.py
 import csv
 import io
+import itertools
 import json
 import logging
-import os
 import time
 import uuid
-from datetime import datetime, timezone
-from typing import Any
+from functools import lru_cache
+from typing import TYPE_CHECKING
 
 import azure.functions as func
 from azure.monitor.opentelemetry import configure_azure_monitor
-from opentelemetry import metrics
-
-from ai.scorer import score_csv_bytes
-
-# ----------------------------
-# ADDED: Service Bus imports
-# ----------------------------
 from azure.servicebus import ServiceBusClient, ServiceBusMessage
+from opentelemetry import metrics
+from pydantic import BaseModel, ValidationError
+
+from ai.scorer import score_csv_bytes, utc_now_iso
+from config import Settings
+from models import (
+    AnalyzeJobMessage,
+    AnalyzeSummary,
+    ErrorResponse,
+    ListParams,
+    ResultsParams,
+    ResultsResponse,
+    UploadItem,
+    UploadResponse,
+    UploadsResponse,
+)
+
+if TYPE_CHECKING:
+    from azure.storage.blob import BlobServiceClient
 
 app = func.FunctionApp()
 
@@ -27,158 +39,125 @@ app = func.FunctionApp()
 # ------------------------------------------------------------
 # Exports logs/traces/metrics to Application Insights using
 # APPLICATIONINSIGHTS_CONNECTION_STRING from Function App settings.
-if os.environ.get("APPLICATIONINSIGHTS_CONNECTION_STRING"):
+if Settings.load().appinsights_connection_string:
     configure_azure_monitor()
 else:
     logging.warning("Azure Monitor not configured (no APPLICATIONINSIGHTS_CONNECTION_STRING). Running local without telemetry.")
 
-
 meter = metrics.get_meter("cloudguard")
 
-uploads_count = meter.create_counter(
-    name="cloudguard.uploads.count",
-    description="Number of uploaded log files",
-)
+uploads_count = meter.create_counter(name="cloudguard.uploads.count", description="Number of uploaded log files")
+uploads_bytes = meter.create_histogram(name="cloudguard.uploads.size_bytes", description="Size of uploaded CSVs in bytes")
+analysis_duration_ms = meter.create_histogram(name="cloudguard.analysis.duration_ms", description="Time spent analyzing an upload (ms)")
+analysis_failures = meter.create_counter(name="cloudguard.analysis.failures", description="Number of analysis failures")
 
-uploads_bytes = meter.create_histogram(
-    name="cloudguard.uploads.size_bytes",
-    description="Size of uploaded CSVs in bytes",
-)
-
-analysis_duration_ms = meter.create_histogram(
-    name="cloudguard.analysis.duration_ms",
-    description="Time spent analyzing an upload (ms)",
-)
-
-analysis_failures = meter.create_counter(
-    name="cloudguard.analysis.failures",
-    description="Number of analysis failures",
-)
 
 # ----------------------------
 # Helpers
 # ----------------------------
-def log_event(event: str, **fields: Any) -> None:
-    """
-    Structured log as a single JSON line so it can be parsed in Application Insights.
-    """
-    payload = {"event": event, **fields}
-    logging.info(json.dumps(payload))
+def log_event(event: str, **fields) -> None:
+    """Structured log as a single JSON line so it can be parsed in Application Insights."""
+    logging.info(json.dumps({"event": event, **fields}))
 
 
-def utc_now_iso() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-
-
-def _allowed_origins() -> set[str]:
-    """
-    Comma-separated list in Azure App Settings:
-      CORS_ALLOWED_ORIGINS = "http://localhost:5173,https://yourapp.azurestaticapps.net"
-    """
-    raw = os.environ.get("CORS_ALLOWED_ORIGINS", "").strip()
-    origins = set()
-    if raw:
-        for part in raw.split(","):
-            o = part.strip()
-            if o:
-                origins.add(o)
-    # always allow local dev
-    origins.add("http://localhost:5173")
-    origins.add("http://127.0.0.1:5173")
-    return origins
-
-
-def _is_origin_allowed(origin: str | None) -> bool:
+def _is_origin_allowed(origin: str | None, allowed: set[str]) -> bool:
     if not origin:
         return False
-
-    if origin in _allowed_origins():
+    if origin in allowed:
         return True
-
-    # Optional convenience: allow any Azure Static Web Apps domain
-    # (tighten later if you want)
-    if origin.endswith(".azurestaticapps.net"):
-        return True
-
-    return False
+    # Optional convenience: allow any Azure Static Web Apps domain (tighten later if needed).
+    return origin.endswith(".azurestaticapps.net")
 
 
 def _cors_headers(req: func.HttpRequest) -> dict:
     origin = req.headers.get("origin")
-    if _is_origin_allowed(origin):
-        return {
-            "Access-Control-Allow-Origin": origin,
-            "Vary": "Origin",
-            "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-            "Access-Control-Allow-Headers": "content-type",
-            "Access-Control-Max-Age": "86400",
-        }
-    return {}
+    if not _is_origin_allowed(origin, Settings.load().allowed_origins):
+        return {}
+    return {
+        "Access-Control-Allow-Origin": origin,
+        "Vary": "Origin",
+        "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+        "Access-Control-Allow-Headers": "content-type",
+        "Access-Control-Max-Age": "86400",
+    }
 
 
-def _json(req: func.HttpRequest, payload: dict, status_code: int = 200) -> func.HttpResponse:
+def _json(req: func.HttpRequest, payload: BaseModel, status_code: int = 200) -> func.HttpResponse:
     return func.HttpResponse(
-        json.dumps(payload),
-        status_code=status_code,
-        mimetype="application/json",
-        headers=_cors_headers(req),
+        payload.model_dump_json(), status_code=status_code, mimetype="application/json", headers=_cors_headers(req)
     )
 
 
 def _text(req: func.HttpRequest, text: str, status_code: int = 200) -> func.HttpResponse:
-    return func.HttpResponse(
-        text,
-        status_code=status_code,
-        mimetype="text/plain",
-        headers=_cors_headers(req),
-    )
+    return func.HttpResponse(text, status_code=status_code, mimetype="text/plain", headers=_cors_headers(req))
 
 
 def _preflight(req: func.HttpRequest) -> func.HttpResponse:
-    # Return 204 for OPTIONS preflight
     return func.HttpResponse(status_code=204, headers=_cors_headers(req))
 
 
-# ----------------------------
-# ADDED: enqueue helper
-# ----------------------------
-def enqueue_analyze_job(upload_id: str, blob: str, container: str = "logs") -> tuple[bool, str | None]:
+def _parse_params(model_cls: type[BaseModel], req: func.HttpRequest) -> tuple[BaseModel | None, func.HttpResponse | None]:
+    """Validate query params against a pydantic model. Returns (params, None) or (None, error_response)."""
+    try:
+        return model_cls(**dict(req.params)), None
+    except ValidationError as e:
+        fields = ", ".join(str(err["loc"][0]) for err in e.errors())
+        return None, _json(req, ErrorResponse(error=f"Missing or invalid query param(s): {fields}"), 400)
+
+
+@lru_cache(maxsize=1)
+def _blob_service_client(connection_string: str) -> "BlobServiceClient":
+    # Cached per worker process: Azure Functions keeps warm instances around across
+    # invocations, so we want one client (and its underlying connection pool) reused
+    # rather than a brand-new one constructed on every single call. Keyed by the
+    # connection string itself so a changed setting still gets a fresh client.
+    from azure.storage.blob import BlobServiceClient  # local import: keep the SDK optional for routes that don't need it
+
+    return BlobServiceClient.from_connection_string(connection_string)
+
+
+def _get_blob_service_client(settings: Settings) -> "BlobServiceClient":
+    if not settings.storage_connection:
+        raise RuntimeError("Missing AzureWebJobsStorage in app settings.")
+    return _blob_service_client(settings.storage_connection)
+
+
+@lru_cache(maxsize=1)
+def _service_bus_client(connection_string: str) -> ServiceBusClient:
+    # Same reuse rationale as _blob_service_client: keep one AMQP connection alive
+    # across invocations instead of opening/closing a new one every enqueue.
+    return ServiceBusClient.from_connection_string(connection_string)
+
+
+def enqueue_analyze_job(settings: Settings, upload_id: str, blob: str, container: str = "logs") -> tuple[bool, str | None]:
     """
     Enqueue an analysis job to Azure Service Bus.
 
     Requires Function App Application Settings:
       - SERVICEBUS_CONNECTION: Service Bus connection string
-      - ANALYZE_QUEUE_NAME: queue name (e.g., analye-job)
+      - ANALYZE_QUEUE_NAME: queue name (e.g., analyze-job)
 
     Returns:
       (ok, error_message)
     """
-    sb_conn = os.environ.get("SERVICEBUS_CONNECTION", "").strip()
-    queue_name = os.environ.get("ANALYZE_QUEUE_NAME", "").strip()
-
-    if not sb_conn or not queue_name:
+    if not settings.servicebus_connection or not settings.analyze_queue_name:
         err = "Missing SERVICEBUS_CONNECTION or ANALYZE_QUEUE_NAME"
         log_event("job_enqueue_skipped", upload_id=upload_id, reason=err)
         return False, err
 
-    payload = {
-        "upload_id": upload_id,
-        "container": container,
-        "blob": blob,
-        "requested_at": utc_now_iso(),
-    }
+    job = AnalyzeJobMessage(upload_id=upload_id, container=container, blob=blob, requested_at=utc_now_iso())
 
     try:
-        with ServiceBusClient.from_connection_string(sb_conn) as client:
-            with client.get_queue_sender(queue_name) as sender:
-                sender.send_messages(ServiceBusMessage(json.dumps(payload)))
+        client = _service_bus_client(settings.servicebus_connection)
+        with client.get_queue_sender(settings.analyze_queue_name) as sender:
+            sender.send_messages(ServiceBusMessage(job.model_dump_json()))
 
-        log_event("job_enqueue_ok", upload_id=upload_id, queue=queue_name, blob=blob, container=container)
+        log_event("job_enqueue_ok", upload_id=upload_id, queue=settings.analyze_queue_name, blob=blob, container=container)
         return True, None
 
     except Exception as e:
         logging.exception("Service Bus enqueue failed")
-        log_event("job_enqueue_failed", upload_id=upload_id, queue=queue_name, error=str(e))
+        log_event("job_enqueue_failed", upload_id=upload_id, queue=settings.analyze_queue_name, error=str(e))
         return False, str(e)
 
 
@@ -199,34 +178,20 @@ def upload_logs(req: func.HttpRequest) -> func.HttpResponse:
     if req.method == "OPTIONS":
         return _preflight(req)
 
+    settings = Settings.load()
     try:
-        from azure.storage.blob import BlobServiceClient
-    except ImportError:
-        logging.exception("azure-storage-blob is not installed")
-        return _json(req, {"error": "Server misconfigured: azure-storage-blob not installed."}, 500)
+        blob_service = _get_blob_service_client(settings)
+    except (ImportError, RuntimeError) as e:
+        return _json(req, ErrorResponse(error=str(e)), 500)
 
-    conn_str = os.environ.get("AzureWebJobsStorage")
-    if not conn_str:
-        return _json(req, {"error": "Missing AzureWebJobsStorage in app settings."}, 500)
-
-    account_name = None
-    for part in conn_str.split(";"):
-        if part.startswith("AccountName="):
-            account_name = part.split("=", 1)[1]
-            break
-
+    upload_id: str | None = None
     try:
         # Expecting multipart/form-data with key "file"
         file = req.files.get("file")
         if not file:
-            return _json(req, {"error": "No file uploaded. Send as form-data with key 'file'."}, 400)
+            return _json(req, ErrorResponse(error="No file uploaded. Send as form-data with key 'file'."), 400)
 
-        blob_service = BlobServiceClient.from_connection_string(conn_str)
-
-        container_name = "logs"
-        container_client = blob_service.get_container_client(container_name)
-
-        # Create container if it doesn't exist
+        container_client = blob_service.get_container_client("logs")
         try:
             container_client.create_container()
         except Exception:
@@ -242,63 +207,43 @@ def upload_logs(req: func.HttpRequest) -> func.HttpResponse:
         data = file.stream.read()
         size_bytes = len(data)
 
-        # Structured log + custom metrics
         log_event(
-            "upload_received",
-            endpoint="upload-logs",
-            upload_id=upload_id,
-            original_filename=original_filename,
-            size_bytes=size_bytes,
+            "upload_received", endpoint="upload-logs", upload_id=upload_id, original_filename=original_filename, size_bytes=size_bytes
         )
         uploads_count.add(1, {"endpoint": "upload-logs"})
         uploads_bytes.record(size_bytes, {"endpoint": "upload-logs"})
 
-        # Upload file contents
         blob_client.upload_blob(data, overwrite=True)
+        blob_client.set_blob_metadata({"original_filename": original_filename, "uploaded_at": utc_now_iso()})
 
-        # Store human-readable info as metadata (keys must be lowercase)
-        metadata = {
-            "original_filename": original_filename,
-            "uploaded_at": utc_now_iso(),
-        }
-        blob_client.set_blob_metadata(metadata)
+        account_name = dict(p.split("=", 1) for p in settings.storage_connection.split(";") if "=" in p).get("AccountName")
 
         log_event(
-            "upload_stored",
-            endpoint="upload-logs",
-            upload_id=upload_id,
-            blob=blob_name,
-            container=container_name,
-            storage_account=account_name,
+            "upload_stored", endpoint="upload-logs", upload_id=upload_id, blob=blob_name, container="logs", storage_account=account_name
         )
 
-        # ----------------------------
-        # ADDED: enqueue analysis job
-        # ----------------------------
-        enq_ok, enq_err = enqueue_analyze_job(upload_id=upload_id, blob=blob_name, container=container_name)
+        enq_ok, enq_err = enqueue_analyze_job(settings, upload_id=upload_id, blob=blob_name, container="logs")
 
         return _json(
             req,
-            {
-                "ok": True,
-                "upload_id": upload_id,
-                "blob": blob_name,
-                "container": container_name,
-                "storage_account": account_name,
-                "original_filename": original_filename,
-                "size_bytes": size_bytes,
-                # ADDED: enqueue verification fields
-                "enqueued": enq_ok,
-                "enqueue_error": enq_err,
-                "queue_name": os.environ.get("ANALYZE_QUEUE_NAME", ""),
-            },
+            UploadResponse(
+                upload_id=upload_id,
+                blob=blob_name,
+                container="logs",
+                storage_account=account_name,
+                original_filename=original_filename,
+                size_bytes=size_bytes,
+                enqueued=enq_ok,
+                enqueue_error=enq_err,
+                queue_name=settings.analyze_queue_name,
+            ),
             200,
         )
 
     except Exception as e:
         logging.exception("Error in upload_logs")
-        log_event("upload_failed", endpoint="upload-logs", upload_id=locals().get("upload_id"), error=str(e))
-        return _json(req, {"error": f"Error during upload: {str(e)}"}, 500)
+        log_event("upload_failed", endpoint="upload-logs", upload_id=upload_id, error=str(e))
+        return _json(req, ErrorResponse(error=f"Error during upload: {e}"), 500)
 
 
 @app.function_name(name="list_uploads")
@@ -307,160 +252,42 @@ def list_uploads(req: func.HttpRequest) -> func.HttpResponse:
     if req.method == "OPTIONS":
         return _preflight(req)
 
+    settings = Settings.load()
     try:
-        from azure.storage.blob import BlobServiceClient
-    except ImportError:
-        return _json(req, {"error": "azure-storage-blob not installed."}, 500)
+        blob_service = _get_blob_service_client(settings)
+    except (ImportError, RuntimeError) as e:
+        return _json(req, ErrorResponse(error=str(e)), 500)
 
-    conn_str = os.environ.get("AzureWebJobsStorage")
-    if not conn_str:
-        return _json(req, {"error": "Missing AzureWebJobsStorage in app settings."}, 500)
-
-    try:
-        limit = int(req.params.get("limit", "50"))
-    except ValueError:
-        limit = 50
-
-    container_name = "logs"
+    params, err = _parse_params(ListParams, req)
+    if err:
+        return err
 
     try:
-        blob_service = BlobServiceClient.from_connection_string(conn_str)
-        container_client = blob_service.get_container_client(container_name)
+        container_client = blob_service.get_container_client("logs")
 
         # If container doesn't exist yet, return empty list (instead of 500)
         try:
             container_client.get_container_properties()
         except Exception:
-            return _json(req, {"count": 0, "items": []}, 200)
+            return _json(req, UploadsResponse(count=0, items=[]), 200)
 
         blobs = container_client.list_blobs(include=["metadata"])
-
-        items = []
-        for b in blobs:
-            items.append(
-                {
-                    "blob": b.name,
-                    "size": getattr(b, "size", None),
-                    "last_modified": b.last_modified.isoformat() if getattr(b, "last_modified", None) else None,
-                    "original_filename": (b.metadata or {}).get("original_filename"),
-                    "uploaded_at": (b.metadata or {}).get("uploaded_at"),
-                }
+        items = [
+            UploadItem(
+                blob=b.name,
+                size=getattr(b, "size", None),
+                last_modified=b.last_modified.isoformat() if getattr(b, "last_modified", None) else None,
+                original_filename=(b.metadata or {}).get("original_filename"),
+                uploaded_at=(b.metadata or {}).get("uploaded_at"),
             )
-            if len(items) >= limit:
-                break
+            for b in itertools.islice(blobs, params.limit)
+        ]
 
-        return _json(req, {"count": len(items), "items": items}, 200)
+        return _json(req, UploadsResponse(count=len(items), items=items), 200)
 
     except Exception as e:
         logging.exception("Error in list_uploads")
-        return _json(req, {"error": str(e)}, 500)
-
-
-@app.function_name(name="analyze_upload")
-@app.route(route="analyze", methods=["POST", "OPTIONS"], auth_level=func.AuthLevel.ANONYMOUS)
-def analyze_upload(req: func.HttpRequest) -> func.HttpResponse:
-    if req.method == "OPTIONS":
-        return _preflight(req)
-
-    try:
-        from azure.storage.blob import BlobServiceClient
-    except ImportError:
-        return _json(req, {"error": "azure-storage-blob not installed."}, 500)
-
-    conn_str = os.environ.get("AzureWebJobsStorage")
-    if not conn_str:
-        return _json(req, {"error": "Missing AzureWebJobsStorage in app settings."}, 500)
-
-    upload_id = req.params.get("upload_id")
-    if not upload_id:
-        return _json(req, {"error": "Missing query param: upload_id"}, 400)
-
-    # Start timing AFTER we have a valid upload_id (OPTIONS preflight should not count)
-    t0 = time.time()
-    log_event("analyze_started", endpoint="analyze", upload_id=upload_id)
-
-    logs_container = "logs"
-    results_container = "results"
-
-    input_blob = upload_id if upload_id.endswith(".csv") else f"{upload_id}.csv"
-    scored_blob = f"scored/{upload_id}.csv"
-    summary_blob = f"summary/{upload_id}.json"
-
-    try:
-        blob_service = BlobServiceClient.from_connection_string(conn_str)
-        logs_client = blob_service.get_container_client(logs_container)
-        results_client = blob_service.get_container_client(results_container)
-
-        try:
-            results_client.create_container()
-        except Exception:
-            pass
-
-        # Download the uploaded CSV
-        in_blob_client = logs_client.get_blob_client(input_blob)
-        try:
-            props = in_blob_client.get_blob_properties()
-        except Exception:
-            return _json(req, {"error": f"Upload not found: {input_blob}"}, 404)
-
-        meta = props.metadata or {}
-        original_filename = meta.get("original_filename")
-
-        raw = in_blob_client.download_blob().readall()
-
-        # AI scoring: delegate to backend/ai/scorer.py
-        scored_bytes, summary = score_csv_bytes(raw, upload_id=upload_id)
-
-        # Store scored CSV in results container
-        results_client.get_blob_client(scored_blob).upload_blob(scored_bytes, overwrite=True)
-
-        # Add fields that are pipeline-specific (blob paths, original filename)
-        summary.update(
-            {
-                "upload_id": upload_id,
-                "input_blob": f"{logs_container}/{input_blob}",
-                "output_blob": f"{results_container}/{scored_blob}",
-                "original_filename": original_filename,
-            }
-        )
-
-
-        results_client.get_blob_client(summary_blob).upload_blob(
-            json.dumps(summary).encode("utf-8"),
-            overwrite=True,
-        )
-
-        dt_ms = int((time.time() - t0) * 1000)
-        analysis_duration_ms.record(dt_ms, {"endpoint": "analyze"})
-
-        log_event(
-            "analyze_complete",
-            endpoint="analyze",
-            upload_id=upload_id,
-            duration_ms=dt_ms,
-            rows=summary.get("rows", 0),
-            anomalies=summary.get("anomalies", 0),
-            model_version=summary.get("model_version"),
-        )
-
-        return _json(req, summary, 200)
-
-    except Exception as e:
-        logging.exception("Error in analyze_upload")
-
-        analysis_failures.add(1, {"endpoint": "analyze"})
-
-        dt_ms = int((time.time() - t0) * 1000)
-        analysis_duration_ms.record(dt_ms, {"endpoint": "analyze"})
-
-        log_event(
-            "analyze_failed",
-            endpoint="analyze",
-            upload_id=upload_id,
-            duration_ms=dt_ms,
-            error=str(e),
-        )
-        return _json(req, {"error": str(e)}, 500)
+        return _json(req, ErrorResponse(error=str(e)), 500)
 
 
 @app.function_name(name="get_results")
@@ -469,175 +296,119 @@ def get_results(req: func.HttpRequest) -> func.HttpResponse:
     if req.method == "OPTIONS":
         return _preflight(req)
 
+    settings = Settings.load()
     try:
-        from azure.storage.blob import BlobServiceClient
-    except ImportError:
-        return _json(req, {"error": "azure-storage-blob not installed."}, 500)
+        blob_service = _get_blob_service_client(settings)
+    except (ImportError, RuntimeError) as e:
+        return _json(req, ErrorResponse(error=str(e)), 500)
 
-    conn_str = os.environ.get("AzureWebJobsStorage")
-    if not conn_str:
-        return _json(req, {"error": "Missing AzureWebJobsStorage in app settings."}, 500)
+    params, err = _parse_params(ResultsParams, req)
+    if err:
+        return err
 
-    upload_id = req.params.get("upload_id")
-    if not upload_id:
-        return _json(req, {"error": "Missing query param: upload_id"}, 400)
-
-    try:
-        limit = int(req.params.get("limit", "200"))
-    except ValueError:
-        limit = 200
-
-    results_container = "results"
-    scored_blob = f"scored/{upload_id}.csv"
-    summary_blob = f"summary/{upload_id}.json"
+    results_client = blob_service.get_container_client("results")
+    scored_blob = f"scored/{params.upload_id}.csv"
+    summary_blob = f"summary/{params.upload_id}.json"
 
     try:
-        blob_service = BlobServiceClient.from_connection_string(conn_str)
-        results_client = blob_service.get_container_client(results_container)
+        summary_bytes = results_client.get_blob_client(summary_blob).download_blob().readall()
+        scored_bytes = results_client.get_blob_client(scored_blob).download_blob().readall()
+    except Exception:
+        return _json(req, ErrorResponse(error="Results not ready yet. Analysis runs automatically after upload."), 404)
 
-        try:
-            summary_bytes = results_client.get_blob_client(summary_blob).download_blob().readall()
-            scored_bytes = results_client.get_blob_client(scored_blob).download_blob().readall()
-        except Exception:
-            return _json(req, {"error": "Results not found. Run /api/analyze first."}, 404)
-
-        summary = json.loads(summary_bytes.decode("utf-8"))
+    try:
+        summary = AnalyzeSummary.model_validate_json(summary_bytes)
         text = scored_bytes.decode("utf-8-sig", errors="replace")
         reader = csv.DictReader(io.StringIO(text))
+        rows = list(itertools.islice(reader, params.limit))
 
-        rows = []
-        for i, row in enumerate(reader):
-            if i >= limit:
-                break
-            rows.append(row)
-
-        return _json(req, {"summary": summary, "rows_returned": len(rows), "rows": rows}, 200)
+        return _json(req, ResultsResponse(summary=summary, rows_returned=len(rows), rows=rows), 200)
 
     except Exception as e:
         logging.exception("Error in get_results")
-        return _json(req, {"error": str(e)}, 500)
+        return _json(req, ErrorResponse(error=str(e)), 500)
 
 
 # ============================================================
-# ADDED: Queue-based analysis worker (Service Bus trigger)
+# Queue-based analysis worker (Service Bus trigger)
 # ============================================================
 @app.function_name(name="analyze_worker")
-@app.service_bus_queue_trigger(
-    arg_name="msg",
-    queue_name="%ANALYZE_QUEUE_NAME%",
-    connection="SERVICEBUS_CONNECTION",
-)
+@app.service_bus_queue_trigger(arg_name="msg", queue_name="%ANALYZE_QUEUE_NAME%", connection="SERVICEBUS_CONNECTION")
 def analyze_worker(msg: func.ServiceBusMessage) -> None:
     """
-    Queue worker: consumes analyze jobs and produces results asynchronously.
-
-    Message body JSON (enqueued by upload_logs):
-      {
-        "upload_id": "...",
-        "container": "logs",
-        "blob": "<upload_id>.csv",
-        "requested_at": "..."
-      }
-
-    Writes:
-      results/scored/<upload_id>.csv
-      results/summary/<upload_id>.json
+    Queue worker: consumes analyze jobs enqueued by upload_logs and produces results.
+    This is the only scoring path -- there is no synchronous HTTP equivalent. The frontend
+    polls GET /results until this has written scored/summary blobs for the upload.
     """
     t0 = time.time()
+    settings = Settings.load()
 
     try:
-        from azure.storage.blob import BlobServiceClient
-    except ImportError:
-        logging.exception("azure-storage-blob is not installed")
+        blob_service = _get_blob_service_client(settings)
+    except (ImportError, RuntimeError):
+        logging.exception("Worker misconfigured")
         return
 
-    conn_str = os.environ.get("AzureWebJobsStorage")
-    if not conn_str:
-        logging.error("Missing AzureWebJobsStorage in app settings.")
-        return
-
-    # Parse queue message
     try:
-        payload = json.loads(msg.get_body().decode("utf-8"))
-    except Exception:
+        job = AnalyzeJobMessage.model_validate_json(msg.get_body())
+    except ValidationError:
         logging.exception("Invalid Service Bus message JSON")
         raise
 
-    upload_id = payload.get("upload_id")
-    logs_container = payload.get("container", "logs")
-    input_blob = payload.get("blob") or (f"{upload_id}.csv" if upload_id else None)
-
-    if not upload_id or not input_blob:
-        logging.error(f"Worker message missing upload_id/blob: {payload}")
-        raise ValueError("Missing upload_id/blob")
-
-    results_container = "results"
-    scored_blob = f"scored/{upload_id}.csv"
-    summary_blob = f"summary/{upload_id}.json"
-
-    log_event("worker_analyze_started", upload_id=upload_id, input_blob=f"{logs_container}/{input_blob}")
+    input_blob = job.blob or f"{job.upload_id}.csv"
+    log_event("worker_analyze_started", upload_id=job.upload_id, input_blob=f"{job.container}/{input_blob}")
 
     try:
-        blob_service = BlobServiceClient.from_connection_string(conn_str)
-        logs_client = blob_service.get_container_client(logs_container)
-        results_client = blob_service.get_container_client(results_container)
+        logs_client = blob_service.get_container_client(job.container)
+        results_client = blob_service.get_container_client("results")
 
-        # Ensure results container exists
         try:
             results_client.create_container()
         except Exception:
             pass
 
-        # Download raw CSV
         in_blob_client = logs_client.get_blob_client(input_blob)
         props = in_blob_client.get_blob_properties()
-        meta = props.metadata or {}
-        original_filename = meta.get("original_filename")
+        original_filename = (props.metadata or {}).get("original_filename")
 
         raw = in_blob_client.download_blob().readall()
 
-        # AI scoring: same production contract as HTTP analyze
-        scored_bytes, summary = score_csv_bytes(raw, upload_id=upload_id)
+        # AI scoring: delegate to backend/ai/scorer.py
+        scored_bytes, summary_dict = score_csv_bytes(raw, upload_id=job.upload_id)
 
-        # Write outputs
+        scored_blob = f"scored/{job.upload_id}.csv"
+        summary_blob = f"summary/{job.upload_id}.json"
+
         results_client.get_blob_client(scored_blob).upload_blob(scored_bytes, overwrite=True)
 
-        summary.update(
+        summary = AnalyzeSummary.model_validate(
             {
-                "upload_id": upload_id,
-                "input_blob": f"{logs_container}/{input_blob}",
-                "output_blob": f"{results_container}/{scored_blob}",
+                **summary_dict,
+                "upload_id": job.upload_id,
+                "input_blob": f"{job.container}/{input_blob}",
+                "output_blob": f"results/{scored_blob}",
                 "original_filename": original_filename,
-                "worker": True,
             }
         )
 
-        results_client.get_blob_client(summary_blob).upload_blob(
-            json.dumps(summary).encode("utf-8"),
-            overwrite=True,
-        )
+        results_client.get_blob_client(summary_blob).upload_blob(summary.model_dump_json().encode("utf-8"), overwrite=True)
 
         dt_ms = int((time.time() - t0) * 1000)
         analysis_duration_ms.record(dt_ms, {"endpoint": "worker"})
-
         log_event(
             "worker_analyze_complete",
-            upload_id=upload_id,
+            upload_id=job.upload_id,
             duration_ms=dt_ms,
-            rows=summary.get("rows", 0),
-            anomalies=summary.get("anomalies", 0),
-            model_version=summary.get("model_version"),
+            rows=summary.rows,
+            anomalies=summary.anomalies,
+            model_version=summary.model_version,
         )
 
     except Exception as e:
         logging.exception("Worker analyze failed")
-
         analysis_failures.add(1, {"endpoint": "worker"})
-
         dt_ms = int((time.time() - t0) * 1000)
         analysis_duration_ms.record(dt_ms, {"endpoint": "worker"})
-
-        log_event("worker_analyze_failed", upload_id=upload_id, duration_ms=dt_ms, error=str(e))
-
+        log_event("worker_analyze_failed", upload_id=job.upload_id, duration_ms=dt_ms, error=str(e))
         # Let Azure Functions handle retry/backoff; dead-letter if it keeps failing.
         raise
