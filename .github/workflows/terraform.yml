@@ -1,0 +1,50 @@
+name: Terraform Apply
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - "*.tf"
+      - ".github/workflows/terraform.yml"
+  workflow_dispatch: {}
+
+concurrency:
+  group: terraform-apply
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      # terraform.tfvars is gitignored (local-only), so supply the same values from the
+      # secrets already used for OIDC login instead of committing them.
+      TF_VAR_subscription_id_students: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      TF_VAR_tenant_id_students: ${{ secrets.AZURE_TENANT_ID }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.15.7"
+
+      # No explicit ARM_* credentials needed here — azurerm's provider and backend both fall
+      # back to the Azure CLI session that `azure/login` just established in this job.
+      - name: terraform init
+        run: terraform init
+
+      - name: terraform plan
+        run: terraform plan -out=tfplan
+
+      - name: terraform apply
+        run: terraform apply -auto-approve tfplan

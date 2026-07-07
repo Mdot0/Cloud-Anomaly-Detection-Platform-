@@ -6,6 +6,10 @@ on:
     paths:
       - "frontend/**"
       - ".github/workflows/deploy-frontend.yml"
+  workflow_run:
+    workflows: ["Terraform Apply"]
+    types: [completed]
+    branches: [ main ]
   workflow_dispatch: {}
 
 concurrency:
@@ -14,12 +18,15 @@ concurrency:
 
 jobs:
   build_and_deploy:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     permissions:
       id-token: write
       contents: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Azure Login (OIDC)
         uses: azure/login@v2

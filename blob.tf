@@ -21,3 +21,11 @@ resource "azurerm_storage_container" "cloudguard_results" {
   storage_account_id    = azurerm_storage_account.cloudguardblob.id
   container_access_type = "private"
 }
+
+# Flex Consumption function apps deploy code to a dedicated storage container rather than via
+# a zip_deploy_file attribute -- see function.tf.
+resource "azurerm_storage_container" "cloudguard_deployments" {
+  name                  = "${local.app_name}-deployments"
+  storage_account_id    = azurerm_storage_account.cloudguardblob.id
+  container_access_type = "private"
+}
