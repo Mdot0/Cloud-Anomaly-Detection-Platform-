@@ -6,6 +6,10 @@ on:
     paths:
       - "backend/**"
       - ".github/workflows/deploy-backend.yml"
+  workflow_run:
+    workflows: ["Terraform Apply"]
+    types: [completed]
+    branches: [ main ]
   workflow_dispatch: {}
 
 concurrency:
@@ -14,6 +18,7 @@ concurrency:
 
 jobs:
   deploy:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -21,6 +26,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Install uv
         run: curl -LsSf https://astral.sh/uv/install.sh | sh

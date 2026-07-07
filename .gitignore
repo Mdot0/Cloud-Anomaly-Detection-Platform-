@@ -34,7 +34,6 @@ obj/
 **/crash.*.log
 **/terraform.tfvars
 **/tfplan
-.terraform-bootstrap/
 
 
 # Node / React
