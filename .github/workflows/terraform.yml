@@ -12,12 +12,14 @@ concurrency:
   group: terraform-apply
   cancel-in-progress: false
 
+permissions:
+  id-token: write
+  contents: read
+
 jobs:
   apply:
     runs-on: ubuntu-latest
-    permissions:
-      id-token: write
-      contents: read
+
     env:
       # terraform.tfvars is gitignored (local-only), so supply the same values from the
       # secrets already used for OIDC login instead of committing them.
